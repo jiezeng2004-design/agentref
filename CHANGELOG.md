@@ -9,8 +9,9 @@ First public alpha of AgentRef, a local, read-only session reference layer for A
 - Codex native mention integration, Claude resource completion, and a DSH Web plugin.
 - Source evidence and workspace reconciliation without executing transcript commands.
 - Native-menu demo, offline showcase bundle, and an installable Python wheel.
+- macOS system ancestor path aliases are accepted without allowing symlinks inside session roots.
 
-Local validation: 131 Python tests, 9 DSH tests, synthetic bidirectional integration,
+Local validation: 132 Python tests (one symlink test skipped on Windows), 9 DSH tests, synthetic bidirectional integration,
 wheel installation/startup, and complete video decoding passed. The demo covers entry
 lookup and session browsing. Full native selection-to-model continuation is not
 certified across all hosts. Host storage formats and mention interfaces may change.

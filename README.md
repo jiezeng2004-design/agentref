@@ -7,7 +7,7 @@ for an offline presentation. `AgentRef-Demo.mp4` is also available separately.
 The 37-second recording shows native entry lookup and session-list browsing in
 Codex and Claude Code; it does not demonstrate end-to-end task continuation.
 
-> Local prerelease check (2026-09-11): 131 Python tests, 9 DSH tests,
+> Local prerelease check (2026-09-11): 132 Python tests (one Windows symlink skip), 9 DSH tests,
 > synthetic bidirectional integration and alpha wheel build passed.
 > The supplied demo shows native entry lookup and session-list browsing.
 > See [release readiness](RELEASE_READINESS.md) for current evidence and open gates.

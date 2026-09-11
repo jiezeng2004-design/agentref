@@ -6,12 +6,37 @@ import unittest
 from pathlib import Path
 from agentref.adapters.registry import ADAPTERS
 from agentref.adapters.protobuf import fields
+from agentref.adapters.snapshot import SnapshotAdapter
 from agentref.index import Index
 from agentref.mcp import Server
 from extra_fixtures import BUILDERS, proto
 
 
 class ExtraAgentsTest(unittest.TestCase):
+    def test_system_ancestor_alias_does_not_allow_links_inside_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp).resolve()
+            real = base / 'real'
+            source = real / 'sessions'
+            source.mkdir(parents=True)
+            target = source / 'session.jsonl'
+            target.write_text('{}', encoding='utf-8')
+            alias = base / 'alias'
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest('Directory symlinks unavailable on this host')
+            adapter = SnapshotAdapter([alias / 'sessions'])
+            self.assertEqual(adapter.checked(alias / 'sessions' / target.name), target)
+            inside = source / 'linked'
+            inside.symlink_to(source, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                adapter.checked(alias / 'sessions' / 'linked' / target.name)
+            outside = real / 'outside.jsonl'
+            outside.write_text('{}', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                adapter.checked(alias / 'outside.jsonl')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

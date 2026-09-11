@@ -104,7 +104,7 @@ def hashes(root):
 
 def check(agent, count=300, turns=600, width=2048):
     with tempfile.TemporaryDirectory(prefix="agentref-scale-") as temp:
-        root = Path(temp)
+        root = Path(temp).resolve()
         sources = root / "source"
         selected = create_sources(agent, sources, count, turns, width)
         before = hashes(sources)

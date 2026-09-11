@@ -44,6 +44,11 @@ class SnapshotAdapter(BaseAdapter):
                 break
             if parent.is_symlink() or (hasattr(parent, "is_junction") and parent.is_junction()):
                 raise ValueError("linked session source")
+            # A configured root may be reached through a system ancestor alias
+            # (macOS /var -> /private/var). Stop at that same root, but only
+            # after rejecting links inside the session path itself.
+            if parent.resolve() in self.roots:
+                break
         return resolved
 
     @contextmanager
