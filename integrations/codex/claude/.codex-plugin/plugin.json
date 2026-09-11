@@ -1,0 +1,18 @@
+{
+  "name": "claude",
+  "version": "0.1.0",
+  "description": "AgentRef: reference local Claude Code sessions and continue work in Codex.",
+  "author": {"name": "AgentRef contributors"},
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Claude 会话 · AgentRef",
+    "shortDescription": "展开会话子菜单，按最近时间选择具体会话。",
+    "longDescription": "本地只读会话引用。通过 AgentRef 选择 Claude 会话，读取完成与中断证据，核对当前工作区后继续。不会启动或恢复 Claude，不修改原始会话。",
+    "developerName": "AgentRef",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": ["选择一个 Claude 历史会话，检查当前项目状态后继续。"]
+  }
+}

@@ -1,0 +1,6 @@
+{"type":"user","sessionId":"claude-demo","cwd":"/fixture/workspace","version":"2.1.251","timestamp":"2026-09-05T10:00:00Z","message":{"role":"user","content":"Implement registry and rollback, then run tests."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"Write","input":{"file_path":"registry.py","content":"REGISTRY = {}\n"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":"File created successfully"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"c2","name":"Bash","input":{"command":"python -m unittest"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c2","content":"Ran 2 tests\nOK\nExit code: 0"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Registry is written. Next I will implement rollback."}],"stop_reason":"end_turn"}}

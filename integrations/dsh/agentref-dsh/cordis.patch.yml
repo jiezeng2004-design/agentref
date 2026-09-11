@@ -1,0 +1,6 @@
+# Local AgentRef integration. The plugin has no model, network, or source-session
+# write capability. Its Node half invokes the local AgentRef executable only.
+- insert:
+    - id: agentref
+      name: dsh-agentref
+      config: {}

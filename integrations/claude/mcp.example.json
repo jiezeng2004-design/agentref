@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "codex": {
+      "command": "C:\\path\\agentref\\.venv\\Scripts\\agentref.exe",
+      "args": ["mcp", "--agent", "codex", "--template-menu", "--workspace", "C:\\path\\project"]
+    }
+  }
+}

@@ -1,0 +1,33 @@
+name: tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.11', '3.14']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install .
+      - run: python -m unittest discover -s tests -v
+      - run: python scripts/demo.py
+  dsh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check src/index.js && node --check src/client/index.js
+        working-directory: integrations/dsh/agentref-dsh
+      - run: node scripts/build-client.mjs
+        working-directory: integrations/dsh/agentref-dsh
+      - run: node --test test/*.test.mjs
+        working-directory: integrations/dsh/agentref-dsh
+      - run: git diff --exit-code -- integrations/dsh/agentref-dsh/lib

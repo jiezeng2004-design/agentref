@@ -1,0 +1,8 @@
+{"type":"session_meta","timestamp":"2026-09-05T10:00:00Z","payload":{"id":"codex-demo","cwd":"/fixture/workspace","cli_version":"0.147.0"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement registry and rollback, then run tests."}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"x1","name":"apply_patch","input":"*** Begin Patch\n*** Add File: registry.py\n+REGISTRY = {}\n*** End Patch"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"x1","output":"Success. Updated the following files:\nA registry.py"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"x2","name":"exec_command","arguments":"{\"cmd\":\"python -m unittest\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"x2","output":"{\"exit_code\":0,\"output\":\"Ran 2 tests. OK\"}"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Next I will implement rollback."}]}}
+{"type":"event_msg","payload":{"type":"task_complete"}}

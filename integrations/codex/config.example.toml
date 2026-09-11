@@ -1,0 +1,3 @@
+[mcp_servers.claude]
+command = 'C:\path\agentref\.venv\Scripts\agentref.exe'
+args = ['mcp', '--agent', 'claude', '--workspace', 'C:\path\project']

@@ -1,0 +1,19 @@
+{
+  "name": "ganetref",
+  "version": "0.1.0",
+  "description": "AgentRef: choose an installed agent and open its session mention menu.",
+  "author": {
+    "name": "AgentRef contributors"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ganetref · AgentRef",
+    "shortDescription": "统一选择 agent，再通过对应 @ 入口展开会话。",
+    "longDescription": "显示已安装并启用的 AgentRef agent。选择后补全对应 @agent，再按 Tab 选择历史会话。选择 agent 时不读取会话正文。",
+    "developerName": "AgentRef",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "列出可引用的 agent，让我选择后再选择具体会话。"
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "ganetref": {"command": "agentref", "args": ["agent-menu"]}
+  }
+}

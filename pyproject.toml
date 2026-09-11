@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentref"
+version = "0.1.0a1"
+description = "Reference sessions across AI coding agents."
+requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
+dependencies = ["zstandard>=0.23; python_version < '3.14'"]
+
+[project.scripts]
+agentref = "agentref.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agentref*"]
+
+[tool.setuptools.package-data]
+agentref = ["assets/*.png", "assets/*.svg", "assets/SOURCES.md", "assets/LICENSE.lobe-icons"]
