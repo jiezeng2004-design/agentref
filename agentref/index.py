@@ -3,9 +3,7 @@ import os
 import sqlite3
 from pathlib import Path
 from .core import SessionIR
-from .adapters import ClaudeAdapter, CodexAdapter
 from .mentions import session_time
-from .adapters.codex import request_title
 from .adapters.registry import default_adapters
 
 
@@ -22,6 +20,8 @@ class Index:
         self.adapters = {a.agent: a for a in (adapters if adapters is not None else default_adapters())}
         self.home = Path(data_dir or os.environ.get("AGENTREF_HOME", Path.home() / ".agentref")).expanduser().resolve()
         for adapter in self.adapters.values():
+            if adapter.index_mode not in ("incremental", "snapshot"):
+                raise ValueError("unsupported adapter index mode")
             if any(self.home.is_relative_to(r) for r in adapter.roots):
                 raise ValueError("AgentRef index must not be inside foreign session roots")
         self.home.mkdir(parents=True, exist_ok=True)
@@ -32,6 +32,7 @@ class Index:
             createdAt TEXT, updatedAt TEXT, sourcePath TEXT UNIQUE,
             latestAgentState TEXT, mtime INTEGER, size INTEGER, offset INTEGER,
             fingerprint TEXT, warnings INTEGER)""")
+        self.db.execute("CREATE INDEX IF NOT EXISTS sessions_agent ON sessions(agent)")
         self.db.execute("""CREATE TABLE IF NOT EXISTS mention_aliases (
             agent TEXT, alias TEXT, ref TEXT, PRIMARY KEY(agent, alias))""")
         if self.db.execute("PRAGMA user_version").fetchone()[0] < 1:
@@ -66,7 +67,7 @@ class Index:
         stats = {"files": 0, "changed": 0, "bytesRead": 0, "errors": []}
         seen = set()
         for agent, adapter in self.adapters.items():
-            if hasattr(adapter, "scan_metadata"):
+            if adapter.index_mode == "snapshot":
                 try:
                     for s in adapter.scan_metadata():
                         seen.add(s.sourcePath)
@@ -75,7 +76,7 @@ class Index:
                             ref, agent, s.sessionId, s.title or "未命名会话", s.cwd, s.createdAt, s.updatedAt,
                             s.sourcePath, s.latestAgentState, 0, 0, 0, "snapshot", len(s.parseWarnings)))
                         stats["files"] += 1
-                    if getattr(adapter, "scan_errors", []):
+                    if adapter.scan_errors:
                         stats["errors"].extend(adapter.scan_errors)
                         seen.update(r[0] for r in self.db.execute("SELECT sourcePath FROM sessions WHERE agent=?", (agent,)))
                 except (OSError, ValueError, TypeError, sqlite3.Error):
@@ -95,7 +96,7 @@ class Index:
                 try:
                     stat = path.stat()
                     old = self.db.execute("SELECT * FROM sessions WHERE sourcePath=?", (str(path),)).fetchone()
-                    repair_title = old and agent == "codex" and not request_title(old["title"])
+                    repair_title = old and adapter.metadata_needs_refresh(old)
                     if old and not repair_title and old["mtime"] == stat.st_mtime_ns and old["size"] == stat.st_size:
                         if old["warnings"]:
                             stats["errors"].append(agent + ": cached source metadata has parse warnings")
@@ -146,14 +147,15 @@ class Index:
         return stats
 
     def sessions(self, agent=None):
-        rows = self.db.execute("SELECT * FROM sessions ORDER BY mtime DESC").fetchall()
-        titles = self.adapters["codex"].saved_titles() if "codex" in self.adapters and agent in (None, "codex") else {}
-        result = [dict(r) for r in rows if r["agent"] in self.adapters and (agent is None or r["agent"] == agent)]
-        for row in result:
-            if row["agent"] == "codex":
-                row["title"] = titles.get(row["sessionId"], row["title"])
-                if row["title"] == row["sessionId"]:
-                    row["title"] = "未命名会话"
+        enabled = list(self.adapters) if agent is None else [agent] if agent in self.adapters else []
+        if not enabled:
+            return []
+        placeholders = ",".join("?" for _ in enabled)
+        rows = self.db.execute(f"SELECT * FROM sessions WHERE agent IN ({placeholders})", enabled).fetchall()
+        result = [dict(row) for row in rows]
+        for name, adapter in self.adapters.items():
+            if agent is None or name == agent:
+                adapter.overlay_metadata([row for row in result if row["agent"] == name])
         # Browsing only overlays local titles; body extraction is an explicit command.
         from .titles import apply_cached_titles
         apply_cached_titles(self.home, result)
@@ -177,9 +179,4 @@ class Index:
         if row["agent"] not in self.adapters:
             raise ValueError("source agent is not enabled")
         adapter = self.adapters[row["agent"]]
-        if hasattr(adapter, "read_indexed"):
-            return adapter.read_indexed(row)
-        path = Path(row["sourcePath"])
-        if path.is_symlink() or not any(path.resolve().is_relative_to(r) for r in adapter.roots):
-            raise ValueError("source escaped configured session root")
-        return adapter.readSession(path)
+        return adapter.read_indexed(row)

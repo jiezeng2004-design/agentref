@@ -21,6 +21,12 @@ def timestamp(value):
 
 
 class SnapshotAdapter(BaseAdapter):
+    index_mode = "snapshot"
+
+    def __init__(self, roots):
+        super().__init__(roots)
+        self.scan_errors = []
+
     def scan_files(self, paths, reader):
         self.scan_errors = []
         for path in paths:

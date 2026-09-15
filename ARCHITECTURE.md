@@ -1,8 +1,11 @@
 # AgentRef v0.1 architecture
 
-Local cross-agent session reference layer. Python 3.11+ standard library, SQLite,
+Local cross-agent session reference layer. Python 3.11+, SQLite,
 JSONL adapters, terminal picker and a local stdio MCP server. No network client,
 model calls, telemetry, session resume, or transcript command execution.
+
+DSH compressed sessions use `zstandard` on Python below 3.14 and the standard
+library compression module on Python 3.14+.
 
 Flow: vendor JSONL -> tolerant adapter -> Session IR -> current workspace evidence
 -> continuation context -> CLI / MCP resources and tools.
@@ -10,7 +13,15 @@ Flow: vendor JSONL -> tolerant adapter -> Session IR -> current workspace eviden
 Adapters own all vendor-specific fields. Core exposes discoverSessions,
 getSessionMetadata, readSession, readSessionIncrementally, extractWorkspace and
 getSessionStatus. Unknown schemas degrade with warnings; EOF never proves success.
+The index uses explicit `index_mode` (`incremental` or `snapshot`), described by
+the protocols in `core.py`, rather than inferring a mode from optional methods.
+All adapters own `read_indexed(row)` and enforce their source locator boundary.
+Metadata-only `overlay_metadata(rows)` and incremental `metadata_needs_refresh`
+hooks keep source-specific title policy out of the index. The existing Codex
+cache migration remains in the index because it belongs to the database schema.
 SQLite stores metadata and byte offsets only, never conversation bodies. Listing
+filters enabled/requested sources in SQL using an additive agent index, then sorts
+by normalized session time and exact ref in Python. Source refresh still
 stats discovered files and reads only appended bytes for changed files. Context
 reads the selected source afresh. Incomplete last lines are retried next refresh.
 
@@ -64,7 +75,12 @@ No global integration settings are modified by installation or tests.
 
 ## Additional sources
 
-`adapters/registry.py` registers Claude, Codex, Grok, OpenCode and Antigravity.
+`adapters/registry.py` registers Claude, Codex, Grok, OpenCode, Antigravity and DSH.
+`sources.py` owns source labels, format descriptions and explicit Codex-menu
+visibility. Source support is not the same as host menu visibility. Contract
+tests keep the registry and self-contained JavaScript integrations consistent.
+See [development checks](docs/DEVELOPMENT_CHECKS.md) for catalog and isolated-wheel
+verification commands and their evidence boundaries.
 CLI options and MCP source schemas derive from that registry / exposed adapters.
 A filtered MCP process discovers only its selected source. Shared-index cleanup
 is scoped by agent, so concurrent source-specific servers cannot purge each other.

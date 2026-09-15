@@ -8,6 +8,7 @@ from .adapters import ClaudeAdapter, CodexAdapter
 from .adapters.registry import ADAPTERS
 from .index import Index, default_adapters
 from .handoff import build_context
+from .sources import supported_formats
 
 
 def display(rows, stream=sys.stdout):
@@ -70,11 +71,15 @@ def main(argv=None):
     roots = {name: getattr(args, name + "_root") for name in ADAPTERS}
     if any(roots.values()):
         defaults = {name: ADAPTERS[name]([root]) for name, root in roots.items() if root}
-    # A filtered server only discovers its own source, including during completion.
-    if args.command == "mcp" and args.agent:
+    # Explicit source filters apply before indexing, not just to displayed rows.
+    if getattr(args, "agent", None):
         defaults = {name: adapter for name, adapter in defaults.items() if name == args.agent}
     index = None
     try:
+        if args.command in ("inspect", "context", "pick") and args.agent:
+            source = args.session.strip().lstrip("@").strip().split(":", 1)[0]
+            if source in ADAPTERS and source != args.agent:
+                raise ValueError("Reference source conflicts with --agent; select a matching source.")
         index = Index(args.data_dir, list(defaults.values()))
         if args.command == "mcp":
             from .mcp import Server
@@ -91,7 +96,7 @@ def main(argv=None):
                 probe = Path(td) / "probe.jsonl"
                 probe.write_bytes(b'{"type":"probe"}\n{"partial":')
                 records, _, warnings = read_jsonl(probe)
-            result = {"version": __version__, "roots": {name: [{"path": str(p), "exists": p.is_dir()} for p in a.roots] for name, a in defaults.items()}, "database": index.db.execute("PRAGMA quick_check").fetchone()[0], "parser": "ok" if len(records) == 1 and warnings else "failed", "supportedFormats": ["Claude content blocks", "Codex rollout JSONL", "Grok ACP updates/raw chat fallback", "OpenCode SQLite message/part", "Antigravity SQLite Step protobuf (experimental)"], "refresh": stats}
+            result = {"version": __version__, "roots": {name: [{"path": str(p), "exists": p.is_dir()} for p in a.roots] for name, a in defaults.items()}, "database": index.db.execute("PRAGMA quick_check").fetchone()[0], "parser": "ok" if len(records) == 1 and warnings else "failed", "supportedFormats": supported_formats(), "refresh": stats}
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "sessions":
             rows = index.sessions(args.agent)

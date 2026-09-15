@@ -1,7 +1,7 @@
 import json
 import unittest
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agentref.agent_menu import AgentMenuServer, installed_agents
 from agentref.cli import main
@@ -48,6 +48,20 @@ class AgentMenuTests(unittest.TestCase):
         def unavailable():
             raise OSError("not available")
         self.assertTrue(self.call(AgentMenuServer(unavailable))["isError"])
+
+    def test_inventory_cache_expires_and_failures_never_reuse_stale_entries(self):
+        clock = Mock(return_value=0)
+        catalog = Mock(side_effect=[["claude"], OSError("unavailable"), ["dsh"]])
+        server = AgentMenuServer(catalog, clock=clock)
+        self.assertEqual(len(self.call(server)["structuredContent"]["items"]), 1)
+        clock.return_value = 1.9
+        self.assertEqual(self.call(server, query="dsh")["structuredContent"]["items"], [])
+        self.assertEqual(catalog.call_count, 1)
+        clock.return_value = 2
+        self.assertTrue(self.call(server)["isError"])
+        items = self.call(server)["structuredContent"]["items"]
+        self.assertEqual([item["insertText"] for item in items], ["@dsh"])
+        self.assertEqual(catalog.call_count, 3)
 
     def test_cli_and_transport_never_open_session_index(self):
         with patch("agentref.cli.default_adapters", side_effect=AssertionError("source discovery")), \

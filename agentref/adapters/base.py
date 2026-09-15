@@ -17,8 +17,22 @@ def text_content(value):
 
 
 class BaseAdapter:
+    index_mode = "incremental"
+
     def __init__(self, roots):
         self.roots = [Path(p).expanduser().resolve() for p in roots]
+
+    def metadata_needs_refresh(self, row):
+        return False
+
+    def overlay_metadata(self, rows):
+        """Optional metadata-only display policy; never read session bodies."""
+
+    def read_indexed(self, row):
+        path = Path(row["sourcePath"])
+        if path.is_symlink() or not any(path.resolve().is_relative_to(r) for r in self.roots):
+            raise ValueError("source escaped configured session root")
+        return self.readSession(path)
 
     def discoverSessions(self):
         files = set()

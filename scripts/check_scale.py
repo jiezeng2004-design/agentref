@@ -1,4 +1,4 @@
-"""Reproducible five-source scale check using generated data, never personal history."""
+"""Reproducible all-source scale check using generated data, never personal history."""
 import argparse
 import hashlib
 import json
@@ -41,10 +41,37 @@ def append_jsonl(path, records):
             stream.write(json.dumps(record) + "\n")
 
 
-def create_sources(agent, root, count, turns, width):
+def create_sources(agent, root, count, turns, width, dsh_compressed=False):
     root.mkdir(parents=True)
     messages = [("assistant", f"Historical message {i}: " + "x" * width) for i in range(turns)]
     messages += [("user", LATEST), ("assistant", RECENT)]
+    if agent == "dsh":
+        if dsh_compressed:
+            try:
+                from compression import zstd
+                compress = zstd.compress
+            except ImportError:
+                import zstandard
+                compress = zstandard.ZstdCompressor().compress
+        for i in range(count):
+            folder = root / "sessions/project" / f"scale-{i}"
+            folder.mkdir(parents=True)
+            records = [dict(type="session", version=0, id=f"scale-{i}",
+                            createdAt=1700000000000, cwd=str(root), delegationDepth=0)]
+            turns_data = [("user", "Build a DSH scale sample")]
+            if i == 0:
+                turns_data += messages
+            for seq, (role, content) in enumerate(turns_data):
+                message = dict(role=role, content=[dict(type="text", text=content)])
+                data = dict(**message, source=dict(kind="user")) if role == "user" else dict(message=message)
+                records.append(dict(seq=seq, time=1700000000001 + seq,
+                                    type=role + "/message", surfaceOp="append", data=data))
+            raw = ("\n".join(map(json.dumps, records)) + "\n").encode("utf-8")
+            path = folder / ("session.jsonl.zstd" if dsh_compressed else "session.jsonl")
+            path.write_bytes(compress(raw) if dsh_compressed else raw)
+            if i == 0:
+                selected = path
+        return str(selected)
     if agent in ("claude", "codex"):
         template = (REPO / "tests/fixtures" / f"{agent}-normal.jsonl").read_text(encoding="utf-8")
         for i in range(count):
@@ -102,11 +129,11 @@ def hashes(root):
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob("*") if p.is_file()}
 
 
-def check(agent, count=300, turns=600, width=2048):
+def check(agent, count=300, turns=600, width=2048, dsh_compressed=False):
     with tempfile.TemporaryDirectory(prefix="agentref-scale-") as temp:
         root = Path(temp).resolve()
         sources = root / "source"
-        selected = create_sources(agent, sources, count, turns, width)
+        selected = create_sources(agent, sources, count, turns, width, dsh_compressed)
         before = hashes(sources)
         index = Index(root / "index", [ADAPTERS[agent]([sources])])
         try:
@@ -137,6 +164,7 @@ def check(agent, count=300, turns=600, width=2048):
             assert before == hashes(sources)
             assert not cold["errors"] and not warm["errors"]
             return {"agent": agent, "synthetic": True, "sessions": count, "longMessages": turns,
+                    **({"sourceFormat": "jsonl.zstd" if dsh_compressed else "jsonl"} if agent == "dsh" else {}),
                     "messageWidth": width, "coldMs": round(cold_ms, 1), "warmMs": round(warm_ms, 1),
                     "menuMs": round(menu_ms, 1), "contextWithTracingMs": round(context_ms, 1),
                     "contextChars": len(context), "peakPythonMiB": round(peak / 1048576, 2),
@@ -158,9 +186,10 @@ def main():
         parser.error("bounded inputs required: sessions 1..2000, turns 1..5000, width 1..8192")
     results = []
     for agent in ADAPTERS:
-        result = check(agent, args.sessions, args.turns, args.width)
-        results.append(result)
-        print(json.dumps(result), flush=True)
+        for compressed in ((False, True) if agent == "dsh" else (False,)):
+            result = check(agent, args.sessions, args.turns, args.width, compressed)
+            results.append(result)
+            print(json.dumps(result), flush=True)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(results, indent=2), encoding="utf-8")

@@ -6,8 +6,11 @@ Use that entry's native Tab menu to select a session. The current Codex extensio
 contract has no nested agent item type; this is a text completion bridge.
 Desktop focus and consecutive Tab behavior still require a manual UI check.
 
-The catalog refreshes from `codex plugin list --json --marketplace personal` on
-each request and excludes uninstalled or disabled entries. This is installation
+The catalog refreshes from `codex plugin list --json --marketplace personal`,
+reusing successful inventory for up to two seconds during consecutive searches.
+Plugin installation or enablement changes appear on the next query after that
+window. Failed refreshes report an error instead of returning expired entries.
+The catalog excludes uninstalled or disabled entries. This is installation
 availability, not a guarantee that each agent's source is currently healthy.
 The entry service does not create an index or discover/read session sources.
 Existing direct agent menus retain their original behavior.

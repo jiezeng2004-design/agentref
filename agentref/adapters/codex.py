@@ -16,6 +16,16 @@ def request_title(text):
 class CodexAdapter(BaseAdapter):
     agent = "codex"
 
+    def metadata_needs_refresh(self, row):
+        return not request_title(row["title"])
+
+    def overlay_metadata(self, rows):
+        titles = self.saved_titles()
+        for row in rows:
+            row["title"] = titles.get(row["sessionId"], row["title"])
+            if row["title"] == row["sessionId"]:
+                row["title"] = "未命名会话"
+
     def saved_titles(self):
         titles = {}
         for home in {r.parent for r in self.roots if r.name in ("sessions", "archived_sessions")}:

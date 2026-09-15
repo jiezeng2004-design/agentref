@@ -2,18 +2,15 @@
 import json
 import shutil
 import subprocess
+import time
 
 from .mcp import Server, PROTOCOLS, validate_arguments
 from . import __version__
+from .sources import SOURCES
 
 
-AGENTS = {
-    "claude": "Claude Code",
-    "grok": "Grok",
-    "opencode": "OpenCode",
-    "antigravity": "Antigravity",
-    "dsh": "DSH · DeepSeek Harness",
-}
+AGENTS = {name: source.codex_menu_label for name, source in SOURCES.items()
+          if source.codex_menu_label is not None}
 
 
 def installed_agents():
@@ -35,9 +32,21 @@ def installed_agents():
 
 
 class AgentMenuServer(Server):
-    def __init__(self, catalog=installed_agents):
+    def __init__(self, catalog=installed_agents, clock=time.monotonic):
         # Reuse the JSON-RPC transport only. No Index, adapters or transcript access.
         self.catalog = catalog
+        self.clock = clock
+        self.catalog_names = None
+        self.catalog_expires = 0
+
+    def names(self):
+        if self.catalog_names is None or self.clock() >= self.catalog_expires:
+            # Cache successful inventory only. Never fall back to stale enabled
+            # entries when a refresh fails; source context is never cached here.
+            self.catalog_names = None
+            self.catalog_names = tuple(self.catalog())
+            self.catalog_expires = self.clock() + 2
+        return self.catalog_names
 
     def dispatch(self, method, p):
         if not isinstance(p, dict):
@@ -73,7 +82,7 @@ class AgentMenuServer(Server):
                 # This provider has one level; reject fabricated nested navigation.
                 if args.get("path"):
                     raise ValueError("unsupported path")
-                names = self.catalog()
+                names = self.names()
                 items = [{"type": "completion", "title": AGENTS[name],
                           "detail": "选择 @" + name + "，再按 Tab 展开会话",
                           "insertText": "@" + name}

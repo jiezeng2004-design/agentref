@@ -1,16 +1,17 @@
 # AgentRef
 
-[Alpha release & demo](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.1)
+[Latest alpha: v0.1.0-alpha.2](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.2)
+· [Original demo](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.1)
 
-Download `AgentRef-Showcase.zip` from the release, extract it and open `index.html`
+Download `AgentRef-Showcase.zip` from the original alpha.1 release, extract it and open `index.html`
 for an offline presentation. `AgentRef-Demo.mp4` is also available separately.
 The 37-second recording shows native entry lookup and session-list browsing in
 Codex and Claude Code; it does not demonstrate end-to-end task continuation.
 
-> Local prerelease check (2026-09-11): 132 Python tests (one Windows symlink skip), 9 DSH tests,
-> synthetic bidirectional integration and alpha wheel build passed.
-> The supplied demo shows native entry lookup and session-list browsing.
-> See [release readiness](RELEASE_READINESS.md) for current evidence and open gates.
+This README describes the working checkout, not necessarily the linked release.
+Start with the [documentation guide](docs/README.md) for source support, receiving
+host choices and verification boundaries. Older test counts and host observations
+are retained in [dated verification notes](docs/VERIFICATION_HISTORY.md).
 
 Reference another AI coding agent's session and keep working.
 
@@ -27,14 +28,10 @@ conversation text and command evidence are decoded, while other tool payloads
 are explicitly marked uncertain. Gemini CLI and Qoder are not enabled.
 See [current local setup](LOCAL_SETUP.md) for installation and verification limits.
 
-> v0.1 alpha: Codex's `@claude` plugin now exposes a native session submenu using
-> the installed desktop client's mention extension; its app-server call/read chain
-> passes. Claude Code's `@codex` -> diamond entry -> Tab opens chronological session
-> abbreviations before sending; real terminal selection was verified. Codex Desktop
-> click/chip rendering and full cross-agent model continuation remain separate
-> acceptance gates; see [verification](VERIFICATION.md). MCP forms stay opt-in.
-> Maintainer-machine setup history: [本机使用记录](LOCAL_SETUP.md).
-> These historical records do not configure a fresh installation.
+MCP forms stay opt-in. Native menu rendering and real-model continuation are
+separate acceptance gates; see the [evidence map](docs/README.md#verification).
+The [maintainer-machine setup history](LOCAL_SETUP.md) does not configure a fresh
+installation. Explicit host setup is separate from installing the Python package.
 
 ## Run locally
 
@@ -85,9 +82,13 @@ Native Desktop rendering and real-model continuation remain separate
 acceptance gates from the synthetic tests and app-server checks.
 
 - [Claude CLI / Desktop local Code tab](integrations/claude/README.md)
+- [OpenCode TUI: @agent → Tab → session dialog](integrations/opencode/agentref-tui/README.md)
+- [DSH Web: @agent → Tab → keyboard session selection](integrations/dsh/agentref-dsh/README.md)
+- [Post-send session selection for other receiving hosts](integrations/shared/README.md)
 - [Codex CLI / Desktop local tasks](integrations/codex/README.md)
 
-All surfaces share the same MCP server. Use `--workspace` for a fixed project, or
+Integrations share the Python core through MCP or the CLI; the DSH Web and
+OpenCode TUI plugins invoke the CLI. For MCP, use `--workspace` for a fixed project, or
 `--allow-workspace-root` with the receiving task's explicit workspace argument.
 `--agent` filters the exposed source agent. Normal package installation
 does not alter host configuration. The explicit local setup script registers the
@@ -137,6 +138,11 @@ can contain source-session secrets; review before sharing. No secret scanner is
 claimed. AgentRef excludes common sensitive workspace paths but is not a sandbox.
 
 ## Develop
+
+See [development checks](docs/DEVELOPMENT_CHECKS.md) for the complete local gate,
+isolated-wheel validation and query benchmark. Consult the [script safety
+index](docs/SCRIPTS.md) before running a host-related script: `check_*` does not
+automatically mean synthetic-only, and some installers write without `--apply`.
 
 ### Local titles for unnamed sessions
 

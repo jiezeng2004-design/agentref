@@ -4,10 +4,10 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { createRoutes, sanitizeRows, validAgent, validRef } from '../src/index.js';
 
-async function requestRoute(url, { host = 'localhost:3000', origin, encrypted = false, connection, remoteAddress = '127.0.0.1' } = {}) {
+async function requestRoute(url, { host = 'localhost:3000', origin, encrypted = false, connection, remoteAddress = '127.0.0.1', handler } = {}) {
   const request = { method: 'GET', url, headers: { host, ...(origin === undefined ? {} : { origin }) }, socket: { remoteAddress, encrypted } };
   const response = { writeHead(status) { this.status = status; }, end(body) { this.body = JSON.parse(body); } };
-  await createRoutes({ command: 'synthetic-agentref', connection })[0].handler(request, response);
+  await (handler ?? createRoutes({ command: 'synthetic-agentref', connection })[0].handler)(request, response);
   return response;
 }
 
@@ -27,7 +27,42 @@ test('a searched session beyond the first fifty can be read, but a missing ref c
   assert.equal(selected.body.context, 'synthetic selected context');
   const missing = await requestRoute('/_dsh/agentref/context?ref=claude:99999999');
   assert.equal(missing.status, 503);
-  assert.deepEqual(calls.filter(args => args[0] === 'context'), [['context', rows[50].ref]]);
+  assert.deepEqual(calls.filter(args => args[0] === 'context'), [['context', rows[50].ref, '--agent', 'claude']]);
+});
+
+test('overlapping searches share only in-flight metadata, while selections revalidate independently', async (t) => {
+  const calls = [];
+  t.mock.method(childProcess, 'execFile', (_command, args, _options, callback) => calls.push({ args, callback }));
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const handler = createRoutes({ command: 'synthetic-agentref' })[0].handler;
+  const request = (path) => requestRoute('/_dsh/agentref/' + path, { handler });
+  const first = request('sessions?agent=claude&query=alpha');
+  const second = request('sessions?agent=claude&query=beta');
+  assert.equal(calls.length, 1);
+  const foreign = request('sessions?agent=dsh');
+  assert.equal(calls.length, 2);
+  const selection = request('context?ref=claude:11111111');
+  assert.equal(calls.length, 3);
+  calls[2].callback(null, '[]', '');
+  assert.equal((await selection).status, 503);
+  assert.ok(calls.every(call => call.args[0] === 'sessions'));
+  calls[0].callback(null, JSON.stringify([
+    { agent: 'claude', ref: 'claude:11111111', title: 'alpha' },
+    { agent: 'claude', ref: 'claude:22222222', title: 'beta' }
+  ]), '');
+  calls[1].callback(null, '[]', '');
+  assert.equal((await first).body.sessions[0].title, 'alpha');
+  assert.equal((await second).body.sessions[0].title, 'beta');
+  await foreign;
+  const failure = request('sessions?agent=claude');
+  assert.equal(calls.length, 4);
+  calls[3].callback(new Error('synthetic failure'), '', '');
+  assert.equal((await failure).status, 503);
+  const retry = request('sessions?agent=claude');
+  assert.equal(calls.length, 5);
+  calls[4].callback(null, '[]', '');
+  assert.equal((await retry).status, 200);
 });
 
 test('origin validation rejects different ports, schemes, aliases and malformed origins', async () => {

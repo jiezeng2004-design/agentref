@@ -122,7 +122,7 @@ function trusted(connection, request) {
   return { ok: true };
 }
 
-async function listSessions(command, agent, query, exactRef) {
+async function readSessionRows(command, agent) {
   const stdout = await runAgentRef(command, ['sessions', '--agent', agent, '--json']);
   let decoded;
   try {
@@ -131,12 +131,28 @@ async function listSessions(command, agent, query, exactRef) {
     throw new Error('AgentRef returned invalid JSON');
   }
   if (!Array.isArray(decoded)) throw new Error('AgentRef returned an invalid session list');
-  // Exact selection is checked before the presentation-only menu limit.
-  return sanitizeRows(exactRef === undefined ? decoded : decoded.filter(row => row?.ref === exactRef), agent, query);
+  return decoded;
 }
 
 export function createRoutes(config = {}) {
   const command = resolveCommand(config);
+  const pendingLists = new Map();
+  const listSessions = async (agent, query, exactRef) => {
+    // Merge overlapping metadata searches by source, but revalidate selections
+    // with a fresh read. Completed results and selected context are not retained.
+    let pending;
+    if (exactRef !== undefined) {
+      pending = readSessionRows(command, agent);
+    } else {
+      pending = pendingLists.get(agent);
+      if (!pending) {
+        pending = readSessionRows(command, agent).finally(() => pendingLists.delete(agent));
+        pendingLists.set(agent, pending);
+      }
+    }
+    const rows = await pending;
+    return sanitizeRows(exactRef === undefined ? rows : rows.filter(row => row?.ref === exactRef), agent, query);
+  };
   return [{
     kind: 'prefix',
     path: API_PREFIX,
@@ -162,16 +178,16 @@ export function createRoutes(config = {}) {
           const agent = url.searchParams.get('agent') ?? '';
           const query = url.searchParams.get('query') ?? '';
           if (!validAgent(agent) || query.length > MAX_QUERY_LENGTH) throw new Error('invalid session search');
-          sendJson(response, 200, { ok: true, sessions: await listSessions(command, agent, query) });
+          sendJson(response, 200, { ok: true, sessions: await listSessions(agent, query) });
           return;
         }
         if (url.pathname === `${API_PREFIX}/context`) {
           const ref = url.searchParams.get('ref') ?? '';
           if (!validRef(ref)) throw new Error('invalid session reference');
           const agent = ref.split(':', 1)[0];
-          const listed = await listSessions(command, agent, '', ref);
+          const listed = await listSessions(agent, '', ref);
           if (!listed.some((row) => row.ref === ref)) throw new Error('selected session is no longer available');
-          const text = await runAgentRef(command, ['context', ref]);
+          const text = await runAgentRef(command, ['context', ref, '--agent', agent]);
           if (Buffer.byteLength(text, 'utf8') > MAX_CONTEXT_BYTES) throw new Error('selected context exceeds the local safety limit');
           sendJson(response, 200, { ok: true, ref, context: text });
           return;
