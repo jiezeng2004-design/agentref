@@ -9,10 +9,13 @@ const { chromium } = require('playwright');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'output/native-mentions');
-  await fs.mkdir(output, { recursive: true });
+  const evidenceRoot = path.join(root, 'output/native-mentions');
+  await fs.mkdir(evidenceRoot, { recursive: true });
+  const output = await fs.mkdtemp(path.join(evidenceRoot, 'dsh-browser-'));
   const bundle = await fs.readFile(path.join(root, 'integrations/dsh/agentref-dsh/lib/client.js'));
   const calls = [];
+  let incomplete = false;
+  let empty = false;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/client.js') { res.setHeader('Content-Type', 'text/javascript'); return res.end(bundle); }
@@ -21,7 +24,7 @@ async function main() {
       res.setHeader('Content-Type', 'application/json');
       if (url.pathname.endsWith('/sessions')) {
         const agent = url.searchParams.get('agent');
-        return res.end(JSON.stringify({ ok: true, sessions: ['1','2'].map(x => ({ agent, ref: `${agent}:${x.repeat(16)}`, title: `合成会话 ${x}`, cwd: `D:/fixture/${x}`, updatedAt: '2026-09-13' })) }));
+        return res.end(JSON.stringify({ ok: true, incomplete, sessions: (empty ? [] : ['1','2']).map(x => ({ agent, ref: `${agent}:${x.repeat(16)}`, title: `合成会话 ${x}`, cwd: `D:/fixture/${x}`, updatedAt: '2026-09-13' })) }));
       }
       return res.end(JSON.stringify({ ok: true, context: 'SYNTHETIC CONTEXT ' + url.searchParams.get('ref') }));
     }
@@ -43,10 +46,25 @@ async function main() {
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     const input = page.locator('textarea');
     const countContext = () => calls.filter(x => x.path.endsWith('/context')).length;
+    incomplete = true;
+    for (const noRows of [false, true]) {
+      empty = noRows;
+      await input.fill('@claude');
+      await input.press('Tab');
+      await page.locator('[role=status]').waitFor();
+      assert.match(await page.locator('[role=status]').textContent(), /索引可能不完整/);
+      if (empty) assert.match(await page.locator('[role=listbox]').textContent(), /不代表来源中没有会话/);
+      assert.equal(countContext(), 0);
+      await page.screenshot({ path: path.join(output, empty ? 'dsh-incomplete-empty.png' : 'dsh-incomplete-menu.png') });
+      await input.press('Escape');
+      await page.locator('[role=listbox]').waitFor({ state: 'detached' });
+    }
+    incomplete = false; empty = false;
     for (const agent of ['claude','codex','grok','opencode','antigravity','dsh']) {
       await input.fill('@' + agent);
       await input.press('Tab');
       await page.locator('[role=option][aria-selected=true]').waitFor();
+      assert.equal(await page.locator('[role=status]').count(), 0);
       assert.equal(countContext(), 0);
       assert.equal(await page.evaluate(() => sent.length), 0);
       await input.press('Escape');
@@ -73,7 +91,7 @@ async function main() {
     assert.equal(sent.length, 1);
     assert.ok(sent[0].includes('SYNTHETIC CONTEXT'));
     assert.deepEqual(errors, []);
-    const result = { passed: true, sources: 6, contextReads: countContext(), syntheticSubmissions: sent.length, menuBounds: bounds, pageErrors: errors };
+    const result = { passed: true, synthetic: true, modelCalled: false, output, incompleteWarnings: true, sources: 6, contextReads: countContext(), syntheticSubmissions: sent.length, menuBounds: bounds, pageErrors: errors };
     await fs.writeFile(path.join(output, 'dsh-browser-result.json'), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result));
   } finally {

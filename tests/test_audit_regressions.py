@@ -31,7 +31,12 @@ class AuditRegressionTests(unittest.TestCase):
         index.close()
         index = Index(self.root / 'shared', adapters[1:])
         try:
+            statements = []
+            index.db.set_trace_callback(statements.append)
             index.refresh()
+            cleanup = next(statement for statement in statements
+                           if 'SELECT sourcePath,agent,ref FROM sessions' in statement and 'WHERE agent IN' in statement)
+            self.assertIn("WHERE agent IN ('dsh')", cleanup)
             self.assertEqual([r['agent'] for r in index.sessions()], ['dsh'])
             self.assertEqual(index.sessions('claude'), [])
             self.assertEqual(index.matches(cached['ref']), [])
@@ -147,7 +152,7 @@ class AuditRegressionTests(unittest.TestCase):
             stream.write('{"type":"user","message":{"content":"Appended"}}\n')
         index = self.index('claude')
         self.assertTrue(index.refresh()['errors'])
-        self.assertEqual(index.db.execute('PRAGMA user_version').fetchone()[0], 1)
+        self.assertEqual(index.db.execute('PRAGMA user_version').fetchone()[0], 4)
 
     def test_known_tool_records_do_not_create_false_metadata_warnings(self):
         for agent in ('claude', 'codex'):
@@ -161,3 +166,76 @@ class AuditRegressionTests(unittest.TestCase):
                     self.assertFalse(index.refresh()['errors'])
                 finally:
                     index.close()
+
+    def test_adapter_diagnostics_survive_metadata_indexing_and_warm_cache(self):
+        path = self.source / 'partial.jsonl'
+        path.write_text(json.dumps({
+            'type': 'user', 'sessionId': 'partial', 'message': {'content': 'Synthetic only'}}) + '\n', encoding='utf-8')
+        adapter = ADAPTERS['claude']([self.source])
+        consume = adapter.consume
+
+        def consume_with_diagnostic(session, record):
+            consume(session, record)
+            if record.get('type') == 'user':
+                session.parseWarnings.append('synthetic adapter diagnostic')
+
+        adapter.consume = consume_with_diagnostic
+        index = Index(self.root / 'diagnostic-index', [adapter])
+        try:
+            self.assertTrue(index.refresh()['errors'])
+            self.assertEqual(index.db.execute('SELECT warnings FROM sessions').fetchone()[0], 1)
+            self.assertTrue(index.refresh()['errors'])
+        finally:
+            index.close()
+
+    def test_cli_session_query_is_applied_before_limit_and_offset(self):
+        import os
+        for number in range(5):
+            path = self.source / f'session-{number}.jsonl'
+            path.write_text(json.dumps({
+                'type': 'user', 'sessionId': f'session-{number}',
+                'message': {'content': f'MATCH_TARGET {number}'}}) + '\n', encoding='utf-8')
+            os.utime(path, (1_700_000_000 + number, 1_700_000_000 + number))
+        result = self.cli('sessions', '--agent', 'claude', '--json', '--query', 'MATCH_TARGET', '--limit', '2', '--offset', '1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = json.loads(result.stdout)
+        self.assertEqual([row['sessionId'] for row in rows], ['session-3', 'session-2'])
+        plain = self.cli('sessions', '--agent', 'claude', '--json', '--limit', '2', '--offset', '1')
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        self.assertEqual([row['sessionId'] for row in json.loads(plain.stdout)], ['session-3', 'session-2'])
+
+    def test_sql_session_pages_match_full_python_order_at_timestamp_edges(self):
+        index = self.index('claude')
+        rows = [
+            ('claude:tie-a', 'tie-a', '2026-01-02T03:00:00+02:00', '', 2_000_000_000_000_000_000),
+            ('claude:tie-z', 'tie-z', '2026-01-02T01:00:00Z', 'invalid', 1),
+            ('claude:mtime', 'mtime', '', '', 1_700_000_000_000_000_000),
+            ('claude:old', 'old', '', '0001-01-01T00:00:00+14:00', 1_700_000_000_000_000_001),
+            ('claude:new', 'new', '9999-12-31T23:59:59.999999-14:00', '', 1),
+            ('claude:epoch', 'epoch', 'invalid', 'invalid', 1),
+        ]
+        index.db.executemany('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+            (ref, 'claude', sid, sid, '', created, updated, f'synthetic::{sid}', 'unknown', mtime, 0, 0, '', 0)
+            for ref, sid, created, updated, mtime in rows))
+        index.db.commit()
+        expected = [row['ref'] for row in index.sessions('claude')]
+        for offset in range(len(expected) + 1):
+            page = index.sessions('claude', limit=2, offset=offset)
+            self.assertEqual([row['ref'] for row in page], expected[offset:offset + 2], offset)
+        tail = index.sessions('claude', offset=3)
+        self.assertEqual([row['ref'] for row in tail], expected[3:])
+
+    def test_exact_reference_match_uses_single_sql_row(self):
+        index = self.index('claude')
+        ref = 'claude:0123456789abcdef'
+        index.db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+            ref, 'claude', 'session-id', 'Exact target', '', '', '2026-01-01T00:00:00Z',
+            'synthetic::exact', 'unknown', 0, 0, 0, '', 0))
+        index.db.commit()
+        with patch.object(index, 'sessions', side_effect=AssertionError('exact ref should not load the source list')):
+            rows = index.matches(ref)
+            page = index.matches(ref, limit=1)
+            beyond = index.matches(ref, limit=1, offset=1)
+        self.assertEqual([(row['ref'], row['title']) for row in rows], [(ref, 'Exact target')])
+        self.assertEqual([row['ref'] for row in page], [ref])
+        self.assertEqual(beyond, [])

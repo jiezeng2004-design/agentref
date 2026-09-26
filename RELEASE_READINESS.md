@@ -1,4 +1,39 @@
-# 发布验收记录 — 2026-09-15
+# 发布验收记录 — 更新于 2026-09-26
+
+> 当前工作区与待验收项见 [当前验收表](docs/CURRENT_ACCEPTANCE.md)。
+> 本文按日期保留发布历史；旧版本的 CI 不能为新版本背书。
+
+## v0.1.0-alpha.3 授权发布（2026-09-26）
+
+用户已确认全部当前源码、集成、测试、CI 与文档改动纳入发布，并授权提交、推送、
+等待候选 CI、打标签与 GitHub prerelease。排除生成输出、缓存、虚拟环境和个人数据；
+DSH 保持 private，不发布 PyPI/npm。历史 alpha.1 展示附件不替换。
+
+发布门槛：最终提交的七个 CI 作业全部成功，再从该提交导出 source ZIP、构建并
+隔离验证 Python wheel，生成 SHA256SUMS；先上传为 draft 并核对远端摘要，最后公开为
+prerelease。发布后的事实入口为
+[alpha.3 Release](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.3)
+及其发布说明中的固定提交和 CI 链接；本段记录授权流程，不预先宣称远端已成功。
+
+本地自动化已通过，真实宿主 UI 和模型续做仍未复验；作为明确披露限制的实验性
+预发布，不宣称完整生产验收。降级程序时另用隔离 data-dir，不覆盖当前索引或配置。
+
+## v0.1.0-alpha.3 发布授权前快照（2026-09-26）
+
+本轮发布前结论：**本地自动化通过，完整发布验收尚未完成**。Python 3.11/3.14
+各运行 268 项（266 通过、2 跳过），Node 38 项通过；两个 Python 版本的隔离 wheel、
+六来源合成检查、性能等价检查及 DSH/Antigravity 隔离浏览器均通过。
+完整结果、环境问题及发布检查顺序已置于[当前验收表顶部](docs/CURRENT_ACCEPTANCE.md)。
+本轮未产生保留的发布附件，不将临时 wheel smoke test 等同于附件已备齐。
+
+工作区候选版本已递增为 Python `0.1.0a3` 和 DSH 私有包 `0.1.0-alpha.3`；
+最新公开 prerelease 仍是 alpha.2。当前本机 Python 3.11/3.14 回归、Node
+集成回归、合成规模检查及源码树外 wheel 验收见[当前验收表](docs/CURRENT_ACCEPTANCE.md)。
+
+远端 `main` 仍为 `1018072c89ce7e44bb4cc42ed1fe09cd7d5b9c9c`，该提交的
+[GitHub Actions](https://github.com/jiezeng2004-design/agentref/actions/runs/34964169955)
+成功，但没有覆盖本地候选或新增的 Antigravity CI 检查。当前尚未提交、推送、
+打标签或发布；真实宿主 UI、模型续做和候选版本的远端 CI 仍待验收。
 
 ## v0.1.0-alpha.2 发布状态
 
@@ -87,7 +122,10 @@ Windows 受限沙箱首次运行产生临时目录 WinError 5 和 Node spawn EPE
 
 本机 `output/release-ready-20260911/` 包含展示 ZIP、`showcase/index.html`、MP4、封面、配文、构建包及检查日志。`output/` 已加入忽略规则，避免生成工具、本机基线和视频自动进入源码提交。展示包可以独立发送；父目录是本机验收资料，不作为公开素材。
 
-## 正式发布仍需的证据
+## 历史记录：alpha.1 收尾时的待验收项
+
+以下提交、CI 和发布状态是当时的快照，不是当前待办；alpha.2 状态见本文顶部。
+原生选择到真实模型续做仍需单独验收，见当前验收表。
 
 - 本轮修复仍需在明确发布授权后提交，并针对最终提交核对 CI、版本标签及发布包的一致性。
 - 当次原生菜单选中会话 → 上下文附加 → 接收 Agent 完成任务尚未复验；菜单录屏只能证明所展示的交互。

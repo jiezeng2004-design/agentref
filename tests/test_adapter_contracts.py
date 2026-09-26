@@ -60,7 +60,71 @@ class AdapterContractTests(unittest.TestCase):
                 index.refresh()
                 row = index.sessions()[0]
                 self.assertEqual(row["title"], "metadata only")
+                page = index.matches("metadata", limit=1)
+                self.assertEqual([item["title"] for item in page], ["metadata only"])
                 self.assertEqual(index.read(row).sessionId, "one")
+            finally:
+                index.close()
+
+    def test_snapshot_metadata_reuses_stable_sources_and_invalidates_wal_changes(self):
+        class FileSnapshot(SnapshotAdapter):
+            agent = "fixture"
+            metadata_cache_enabled = True
+            metadata_uses_wal = True
+
+            def __init__(self, roots, path):
+                super().__init__(roots)
+                self.path = path
+                self.reads = 0
+
+            def scan_metadata(self):
+                def read(path):
+                    self.reads += 1
+                    title = path.read_text(encoding="utf-8")
+                    return SessionIR(agent=self.agent, sessionId="one", title=title,
+                                     sourcePath=str(path))
+                yield from self.scan_files([self.path] if self.path.is_file() else [], read)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "source"
+            root.mkdir()
+            path = root / "snapshot.json"
+            path.write_text("one", encoding="utf-8")
+            adapter = FileSnapshot([root], path)
+            index = Index(Path(td) / "index", [adapter])
+            try:
+                self.assertEqual(index.refresh()["files"], 1)
+                self.assertEqual(adapter.reads, 1)
+                self.assertEqual(index.refresh()["files"], 1)
+                self.assertEqual(adapter.reads, 1)
+                index.db.execute("UPDATE sessions SET sourcePath=sourcePath || '::external'")
+                index.db.commit()
+                index.refresh()
+                self.assertEqual(adapter.reads, 2)
+                self.assertEqual(len(index.sessions()), 1)
+
+                index.db.execute("DELETE FROM sessions WHERE agent='fixture'")
+                index.db.commit()
+                index.refresh()
+                self.assertEqual(adapter.reads, 3)
+                self.assertEqual(len(index.sessions()), 1)
+
+                path.write_text("two", encoding="utf-8")
+                index.refresh()
+                self.assertEqual(adapter.reads, 4)
+                self.assertEqual(index.sessions()[0]["title"], "two")
+
+                Path(str(path) + "-wal").write_bytes(b"changed")
+                index.refresh()
+                self.assertEqual(adapter.reads, 5)
+
+                path.unlink()
+                index.refresh()
+                self.assertEqual(index.sessions(), [])
+                path.write_text("new", encoding="utf-8")
+                index.refresh()
+                self.assertEqual(adapter.reads, 6)
+                self.assertEqual(index.sessions()[0]["title"], "new")
             finally:
                 index.close()
 

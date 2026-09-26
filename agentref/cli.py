@@ -48,6 +48,9 @@ def main(argv=None):
     ls = sub.add_parser("sessions")
     ls.add_argument("--agent", choices=list(ADAPTERS))
     ls.add_argument("--json", action="store_true")
+    ls.add_argument("--query", default="", help="Filter sessions before serializing results")
+    ls.add_argument("--limit", type=int, help="Maximum number of sessions to return (1..500)")
+    ls.add_argument("--offset", type=int, default=0, help="Skip this many matching sessions")
     for command in ("inspect", "context", "pick"):
         p = sub.add_parser(command)
         p.add_argument("session", nargs="?", default="")
@@ -62,6 +65,13 @@ def main(argv=None):
     mcp.add_argument("--template-menu", action="store_true", help="Use ordered dynamic resource completion in Claude instead of its fuzzy-ranked static list")
     mcp.add_argument("--allow-workspace-root", action="append", default=[], type=Path)
     args = parser.parse_args(argv)
+    if args.command == "sessions":
+        if args.limit is not None and not 1 <= args.limit <= 500:
+            parser.error("sessions --limit must be between 1 and 500")
+        if not 0 <= args.offset <= 1_000_000:
+            parser.error("sessions --offset must be between 0 and 1000000")
+        if len(args.query) > 120:
+            parser.error("sessions --query must be at most 120 characters")
     if args.command == "agent-menu":
         from .agent_menu import AgentMenuServer
         AgentMenuServer().serve()
@@ -99,7 +109,10 @@ def main(argv=None):
             result = {"version": __version__, "roots": {name: [{"path": str(p), "exists": p.is_dir()} for p in a.roots] for name, a in defaults.items()}, "database": index.db.execute("PRAGMA quick_check").fetchone()[0], "parser": "ok" if len(records) == 1 and warnings else "failed", "supportedFormats": supported_formats(), "refresh": stats}
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "sessions":
-            rows = index.sessions(args.agent)
+            if args.query:
+                rows = index.matches(args.query, args.agent, limit=args.limit, offset=args.offset)
+            else:
+                rows = index.sessions(args.agent, limit=args.limit, offset=args.offset)
             print(json.dumps(rows, ensure_ascii=False, indent=2)) if args.json else display(rows)
         else:
             query = args.session.strip().lstrip("@").strip()
@@ -110,7 +123,10 @@ def main(argv=None):
             row = select(rows, require_selection=bare_source or (bool(warnings) and not exact_ref))
             session = index.read(row)
             session.parseWarnings.extend("index refresh incomplete: " + warning for warning in warnings)
-            print(json.dumps(session.to_dict(), ensure_ascii=False, indent=2) if args.command == "inspect" else build_context(session, args.workspace))
+            if args.command == "inspect":
+                print(session.to_json())
+            else:
+                print(build_context(session, args.workspace))
         return 0
     except (ValueError, OSError, sqlite3.Error, KeyboardInterrupt) as exc:
         print("agentref: " + str(exc), file=sys.stderr)

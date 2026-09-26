@@ -1,5 +1,6 @@
 import io
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -23,6 +24,13 @@ class TitleTests(unittest.TestCase):
         self.assertLessEqual(len(request_title("需求" * 100)), 60)
         self.assertEqual(list(bounded_records(io.BytesIO(b'x' * (MAX_LINE + 1)))), [])
 
+    def test_empty_title_cache_skips_row_identity_checks(self):
+        rows = [dict(ref="claude:0000000000000001", title="A named session", sessionId="one")]
+        with tempfile.TemporaryDirectory() as temp, \
+                patch("agentref.titles.is_unnamed", side_effect=AssertionError("empty cache cannot overlay a row")):
+            apply_cached_titles(Path(temp), rows, cache={})
+        self.assertEqual(rows[0]["title"], "A named session")
+
     def test_dsh_cache_identity_precedence_and_read_only_menu(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -38,7 +46,14 @@ class TitleTests(unittest.TestCase):
                     row = index.sessions()[0]
                 self.assertEqual(row['title'], 'Build a DSH sample')
                 self.assertEqual(row['titleSource'], 'local-user-request')
+                self.assertEqual(index.matches('Build a DSH sample', limit=1)[0]['title'], 'Build a DSH sample')
+                self.assertEqual(index.matches('未命名', limit=1), [])
                 self.assertEqual(organize(index)['stats']['candidates'], 0)
+                cache_path = index.home / CACHE
+                cache = json.loads(cache_path.read_text(encoding='utf-8'))
+                cache[row['ref']]['title'] = 'Updated local title'
+                cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding='utf-8')
+                self.assertEqual(index.sessions()[0]['title'], 'Updated local title')
                 changed = dict(row, title='未命名会话', sessionId='different')
                 apply_cached_titles(index.home, [changed])
                 self.assertEqual(changed['title'], '未命名会话')
@@ -62,7 +77,24 @@ class TitleTests(unittest.TestCase):
                 adapter = ADAPTERS[agent]([root])
                 session = next(adapter.scan_metadata())
                 row = vars(session)
-                self.assertEqual(next(user_texts(adapter, row)), expected)
+                if agent == 'opencode':
+                    statements = []
+                    database = adapter.database
+
+                    @contextmanager
+                    def traced(path):
+                        with database(path) as db:
+                            db.set_trace_callback(statements.append)
+                            yield db
+
+                    with patch.object(adapter, 'database', traced), \
+                            patch.object(adapter, 'metadata', wraps=adapter.metadata) as metadata:
+                        self.assertEqual(next(user_texts(adapter, row)), expected)
+                        self.assertEqual(metadata.call_count, 1)
+                    part_queries = [statement for statement in statements if 'FROM part WHERE message_id=' in statement]
+                    self.assertEqual(len(part_queries), 1)
+                else:
+                    self.assertEqual(next(user_texts(adapter, row)), expected)
             for agent in ('claude', 'codex'):
                 root = Path(temp) / agent
                 root.mkdir()

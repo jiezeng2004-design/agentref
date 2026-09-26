@@ -1,4 +1,5 @@
 import json
+from itertools import chain, groupby
 from pathlib import Path
 from ..core import SessionIR
 from .snapshot import SnapshotAdapter, timestamp
@@ -6,6 +7,8 @@ from .snapshot import SnapshotAdapter, timestamp
 
 class OpenCodeAdapter(SnapshotAdapter):
     agent = "opencode"
+    metadata_cache_enabled = True
+    metadata_uses_wal = True
 
     def metadata(self, row, path):
         return SessionIR(agent=self.agent, sessionId=row["id"], title=row["title"],
@@ -16,7 +19,8 @@ class OpenCodeAdapter(SnapshotAdapter):
     def scan_metadata(self):
         def read(path):
             with self.database(path) as db:
-                return [self.metadata(row, path) for row in db.execute("SELECT id,title,directory,time_created,time_updated FROM session WHERE parent_id IS NULL")]
+                for row in db.execute("SELECT id,title,directory,time_created,time_updated FROM session WHERE parent_id IS NULL"):
+                    yield self.metadata(row, path)
         yield from self.scan_files((root / "opencode.db" for root in self.roots if (root / "opencode.db").is_file()), read)
 
     def read_indexed(self, row):
@@ -38,15 +42,36 @@ class OpenCodeAdapter(SnapshotAdapter):
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "session_message" in tables and db.execute("SELECT 1 FROM session_message WHERE session_id=? LIMIT 1", (sid,)).fetchone():
                 raise ValueError("OpenCode event projection format not yet supported")
-            for message in db.execute("SELECT id,data FROM message WHERE session_id=? ORDER BY time_created,id", (sid,)):
-                if message["id"] == cutoff:
+            message_filter = "m.session_id=?"
+            message_params = [sid]
+            if cutoff:
+                cutoff_row = db.execute("SELECT time_created FROM message WHERE session_id=? AND id=?",
+                                        (sid, cutoff)).fetchone()
+                if cutoff_row is not None:
+                    cutoff_time = cutoff_row["time_created"]
+                    if cutoff_time is None:
+                        message_filter += " AND m.time_created IS NULL AND m.id<?"
+                        message_params.append(cutoff)
+                    else:
+                        message_filter += " AND (m.time_created IS NULL OR m.time_created<? OR (m.time_created=? AND m.id<?))"
+                        message_params.extend((cutoff_time, cutoff_time, cutoff))
+            messages = db.execute("""SELECT m.id AS message_id,m.data AS message_data,p.data AS part_data
+                                    FROM message AS m
+                                    LEFT JOIN part AS p ON p.message_id=m.id AND p.session_id=m.session_id
+                                    WHERE """ + message_filter + " ORDER BY m.time_created,m.id,p.time_created,p.id",
+                                  message_params)
+            for message_id, group in groupby(messages, key=lambda row: row["message_id"]):
+                first = next(group)
+                if message_id == cutoff:
                     break
                 try:
-                    data = json.loads(message["data"])
+                    data = json.loads(first["message_data"])
                     role = data.get("role")
                     texts = []
-                    for part in db.execute("SELECT data FROM part WHERE message_id=? AND session_id=? ORDER BY time_created,id", (message["id"], sid)):
-                        p = json.loads(part[0])
+                    for message in chain((first,), group):
+                        if message["part_data"] is None:
+                            continue
+                        p = json.loads(message["part_data"])
                         kind = p.get("type")
                         if kind == "text" and not p.get("ignored"):
                             texts.append(p.get("text", ""))

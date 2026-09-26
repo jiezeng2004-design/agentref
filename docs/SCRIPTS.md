@@ -10,8 +10,13 @@ prefix as proof that a script cannot access installed-host metadata.
 | Script | Inputs and effects |
 | --- | --- |
 | `scripts/demo.py` | Synthetic bidirectional context; temporary files only; no real host/model |
-| `scripts/check_scale.py` | Generated stores for all six sources; temporary DB/files; optional `--output` report |
+| `scripts/check_scale.py` | Generated stores for all six sources; temporary DB/files; reports refresh/context peak memory; optional `--output` |
 | `scripts/check_index_query.py` | Temporary synthetic index; compares query semantics and timings; no source refresh |
+| `scripts/check_jsonl_streaming.py` | Temporary JSONL file; compares list-parser and streaming results plus Python peak memory |
+| `scripts/check_dsh_event_streaming.py` | Temporary DSH event file; compares DSH selected-session parsing with retaining the event list |
+| `scripts/check_context_render.py` | Synthetic evidence list; compares bounded JSON output, time and Python peak memory |
+| `scripts/check_evidence_history.py` | Synthetic work history; compares continuation top-k order, time and Python peak memory with full sort |
+| `scripts/check_tool_call_index.py` | Synthetic parallel calls/results; compares indexed correlation with the prior reverse scan |
 | `scripts/check_wheel.py` | Temporary source copy, wheelhouse and venv; build may download dependencies; CLI/MCP use fixtures |
 | `scripts/continuation_trial.py` | `prepare` creates synthetic trial artifacts; `verify` executes bounded trial tests; handing off to a model is separate |
 | `scripts/check_dsh_mentions_browser.cjs` | Headless browser, loopback HTTP fixture server and screenshots under `output/`; not a live DSH host |
@@ -42,7 +47,7 @@ They are not part of the default synthetic test gate.
 | `scripts/configure_opencode_tui.py` | Preview by default; one TUI plugin tuple; `--config-dir` selects target; scoped rollback |
 | `scripts/configure_agent_menu.py` | Preview by default; `--apply` writes the personal agent-entry plugin |
 | `scripts/enable_native_menus.py` | Preview by default; `--apply` changes owned Claude-host template-menu arguments |
-| `scripts/configure_dsh.py` | **Writes/installs when run; no `--apply` preview gate. Do not use as a diagnostic command.** |
+| `scripts/configure_dsh.py` | Preview by default without reading host config or invoking helpers; `--apply` writes/installs the personal Codex DSH plugin. No built-in rollback or multi-file transaction. |
 
 Rollback options are not interchangeable between scripts. Preserve unrelated
 entries; do not restore an entire historical configuration. The two installers
@@ -50,10 +55,23 @@ using shared atomic writes are described in [development checks](DEVELOPMENT_CHE
 
 ## Real-model harness
 
-`scripts/live_demo.py` launches a real Claude/Codex child in a dedicated demo
-workspace, requests implementation, and interrupts its owned child. It may incur
-provider charges and writes ignored host logs/session history. Use only with
-explicit real-host/model authorization. It is not a unit test or offline demo.
+`scripts/live_demo.py` with the `codex` or `claude` argument only previews by default. With explicit
+`--allow-live`, it launches the configured native host in a fresh demo workspace,
+requests the exact first-stage implementation, and waits for a per-run readiness
+marker before stopping its owned process tree. It preserves the configured
+model/provider (no `--ignore-user-config`), uses normal workspace-write/acceptEdits
+permissions, and never launches a proxy or bypasses authentication/permissions.
+Host startup may still load integrations or update its own state; inspect and
+authorize that boundary before calling it. It may incur provider charges and
+writes ignored host logs/session history. Tests use synthetic Python children.
+
+The source stage passes only when readiness is observed, the owned child is
+stopped, protected tests/helper hashes match, and AST validation confirms the
+deliberately exact register implementation plus unimplemented rollback. Model
+code is not executed by this validation. Failure returns exit code 2 even if the
+host itself returned 0. Raw logs remain local; broad string matches no longer
+infer authentication errors. Full continuation and native UI are always separate
+gates, even after a successful source stage. See [current acceptance](CURRENT_ACCEPTANCE.md).
 
 ## Internal helpers
 

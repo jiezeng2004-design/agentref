@@ -19,11 +19,21 @@ All adapters own `read_indexed(row)` and enforce their source locator boundary.
 Metadata-only `overlay_metadata(rows)` and incremental `metadata_needs_refresh`
 hooks keep source-specific title policy out of the index. The existing Codex
 cache migration remains in the index because it belongs to the database schema.
+Grok walks the live workspace/session tree with non-following directory scans and
+rejects linked source ancestors before reading summary metadata.
 SQLite stores metadata and byte offsets only, never conversation bodies. Listing
 filters enabled/requested sources in SQL using an additive agent index, then sorts
 by normalized session time and exact ref in Python. Source refresh still
 stats discovered files and reads only appended bytes for changed files. Context
 reads the selected source afresh. Incomplete last lines are retried next refresh.
+Large histories may build a process-local FTS5 trigram index after repeated
+sparse-result searches. It contains title, session ID and cwd metadata only;
+dense-result searches and dynamic title overlays use the exact SQL/Python fallback.
+Refresh invalidates it when search-document fields or session membership change;
+activity-only metadata updates retain the cache. External DB changes invalidate it
+through `data_version`. Dense candidate decisions are held in a bounded,
+process-local cache to avoid repeating the FTS probe. The index stores casefolded
+trigrams without positional detail; the exact matcher filters candidate false positives.
 
 Workspace is supplied explicitly by the caller; a transcript cwd alone does not
 authorize reading it. Git invocations are fixed read-only argument arrays, with
@@ -35,6 +45,18 @@ Natural-language claims remain uncertain. File existence never proves a feature.
 State: COMPLETED, PARTIAL, NOT_STARTED, FAILED, UNCERTAIN, each with evidence.
 COMPLETED applies to evidenced operations, not inferred product acceptance.
 Handoff includes provenance and treats all foreign text as untrusted data.
+
+Codex sideband `patch_apply_end` events are recognized only for the observed
+add-file shape. The adapter records historical success/failure, exact UTF-8
+content hashes and event provenance without interpreting opaque JavaScript.
+Identical event duplicates collapse; matching direct patch evidence retains its
+original order. Conflicting status/hash evidence stays uncertain. Other change
+types or malformed shapes retain warnings. The base adapter's event-operation
+hook preserves tool chronology without embedding vendor fields in shared logic.
+Index version 2 invalidates warning-bearing Codex metadata once; version 3 replaces
+the agent-only session index with an agent/order/ref index for bounded recent pages;
+version 4 adds a session-ID index for exact session lookup. These migrations retain
+the indexed rows and touch only AgentRef-owned metadata.
 
 `evidence.py` annotates conservative historical supersession without mutating the
 Session IR. Exact command/cwd retries and successful full writes can supersede

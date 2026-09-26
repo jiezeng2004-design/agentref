@@ -27,10 +27,28 @@ and uses its documented local web/client plugin architecture.
 
 Search waits for a 150 ms pause in typing. Esc, clicking outside, or submitting
 the message cancels pending search display; late responses cannot reopen it.
-Overlapping searches for one source share a metadata scan and filter their own
-results. Completed lists are not cached. Selecting a session always revalidates
-its exact reference with a fresh scan before reading context. Explicit CLI
-`--agent` filters also restrict discovery to that source.
+Overlapping searches for the same source and query share an in-flight metadata
+request. Completed lists are not cached. The query and 50-row limit are passed
+to the CLI before JSON serialization; selecting a session revalidates its exact
+reference with a one-row query before reading context. Explicit CLI `--agent`
+filters also restrict discovery to that source.
+
+Metadata subprocess output is bounded separately at 8 MiB; selected context
+remains limited to 256 KiB. The index still refreshes the selected source before
+searching, but the host process receives only matching rows, up to 50, instead
+of the complete inventory. `agentref sessions` also accepts `--query`,
+`--limit` (1–500), and `--offset` (0–1000000); calls without these options keep
+the original full-list behavior. When an installed CLI does not recognize the
+new flags, the plugin retries the legacy full-list command; that fallback can
+still exceed the 8 MiB transport limit.
+
+Successful CLI calls with stderr diagnostics return `incomplete: true` alongside
+`sessions`. The menu warns that candidates may be missing or stale, including
+when the visible list is empty. This is a conservative signal, not a parsed
+warning count or classification; raw stderr is not forwarded on this success
+path. An older server without the flag remains compatible but cannot supply
+this warning. Exact selection still revalidates the source; browsing warnings
+never select a session automatically.
 
 ## Safety boundary
 

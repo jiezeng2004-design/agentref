@@ -1,9 +1,21 @@
 import json
 import hashlib
+import os
 import re
+import stat
 from pathlib import Path
 from ..core import SessionIR
-from ..parser import read_jsonl
+from ..parser import read_jsonl, scan_jsonl
+
+PLAN_PATTERN = re.compile(r"(?i)(next I will|I will |plan to |TODO|接下来|下一步|计划|将实现)")
+_ASCII_PLAN_PATTERN = re.compile(r"(next i will|i will |plan to |todo)")
+_ASCII_LINE_BREAK_PATTERN = re.compile(r"[\n\r\v\f\x1c-\x1e]")
+_LONG_PLAN_TEXT_LIMIT = 256 * 1024
+_FILE_OPERATION_TOOLS = frozenset(("Write", "Edit", "MultiEdit"))
+_TEST_RUN_PATTERN = re.compile(
+    r"(\b(pytest|unittest|vitest|jest)\b|\b(npm|pnpm|yarn|cargo|go)\s+test\b|\bnode\s+--test\b)", re.I)
+_EXIT_CODE_PATTERN = re.compile(r"(?:exit(?:ed with)? code|Process exited with code)[:\s]+(-?\d+)", re.I)
+_FILE_TOOL_SUCCESS_PATTERN = re.compile(r"(success|updated|created|applied)", re.I)
 
 
 def text_content(value):
@@ -21,11 +33,23 @@ class BaseAdapter:
 
     def __init__(self, roots):
         self.roots = [Path(p).expanduser().resolve() for p in roots]
+        self._discovered_stats = {}
 
     def metadata_needs_refresh(self, row):
         return False
 
-    def overlay_metadata(self, rows):
+    def metadata_overlay(self):
+        """Return a stable title overlay map for one metadata query, if any."""
+        return None
+
+    def metadata_overlay_signature(self):
+        """Return a cheap change signature for any external metadata overlay."""
+        return None
+
+    def overlay_title(self, row, overlay=None):
+        return row["title"]
+
+    def overlay_metadata(self, rows, overlay=None):
         """Optional metadata-only display policy; never read session bodies."""
 
     def read_indexed(self, row):
@@ -35,32 +59,80 @@ class BaseAdapter:
         return self.readSession(path)
 
     def discoverSessions(self):
-        files = set()
+        file_stats = {}
         for root in self.roots:
             if not root.is_dir():
                 continue
-            for p in root.rglob("*.jsonl"):
-                if "subagents" in p.parts or p.name.startswith("agent-"):
-                    continue
+            pending = [root]
+            while pending:
+                directory = pending.pop()
                 try:
-                    resolved = p.resolve()
-                    if resolved.is_relative_to(root) and not p.is_symlink():
-                        files.add(resolved)
+                    resolved = directory.resolve()
+                    if (not resolved.is_relative_to(root) or directory.is_symlink()
+                            or (hasattr(directory, "is_junction") and directory.is_junction())):
+                        continue
+                    with os.scandir(directory) as entries:
+                        for entry in entries:
+                            try:
+                                if entry.is_symlink():
+                                    continue
+                                if entry.is_dir(follow_symlinks=False):
+                                    path = Path(entry.path)
+                                    is_junction = getattr(path, "is_junction", None)
+                                    if is_junction is not None and is_junction():
+                                        continue
+                                    if entry.name != "subagents":
+                                        pending.append(path)
+                                elif (entry.name.casefold().endswith(".jsonl")
+                                      and not entry.name.startswith("agent-")):
+                                    source_stat = entry.stat(follow_symlinks=False)
+                                    if stat.S_ISREG(source_stat.st_mode):
+                                        file_stats[entry.path] = (source_stat.st_mtime_ns, source_stat.st_size)
+                            except OSError:
+                                continue
                 except OSError:
                     continue
-        return sorted(files)
+        ordered_paths = sorted(file_stats, key=os.path.normcase)
+        self._discovered_stats = file_stats
+        return [Path(path) for path in ordered_paths]
+
+    def discovered_metadata(self, path):
+        cached = self._discovered_stats.get(os.fspath(path))
+        if cached is not None:
+            return cached
+        source_stat = Path(path).stat()
+        return source_stat.st_mtime_ns, source_stat.st_size
+
+    def release_discovered_metadata(self):
+        self._discovered_stats.clear()
 
     def readSessionIncrementally(self, path, offset=0):
         return read_jsonl(Path(path), offset)
 
+    def scanSessionIncrementally(self, path, offset, consume, on_warning=None, collect_warnings=True):
+        # Preserve older custom adapters that replace the list parser. Built-in
+        # Claude/Codex adapters use the streaming parser to avoid a session-sized
+        # intermediate record list during indexing and selected-session reads.
+        if type(self).readSessionIncrementally is not BaseAdapter.readSessionIncrementally:
+            records, end, warnings = self.readSessionIncrementally(path, offset)
+            for record in records:
+                consume(record)
+            if on_warning is not None:
+                for warning in warnings:
+                    on_warning(warning)
+            return end, warnings if collect_warnings else []
+        return scan_jsonl(Path(path), offset, consume, on_warning, collect_warnings)
+
     def readSession(self, path):
-        records, _, warnings = self.readSessionIncrementally(path)
         session = SessionIR(agent=self.agent, sessionId=Path(path).stem, sourcePath=str(path))
-        for record in records:
+
+        def consume(record):
             try:
                 self.consume(session, record)
             except (TypeError, ValueError, KeyError, AttributeError):
                 session.parseWarnings.append("unsupported record shape; partially skipped")
+
+        _, warnings = self.scanSessionIncrementally(path, 0, consume)
         session.parseWarnings.extend(warnings)
         self.finish(session)
         return session
@@ -85,8 +157,14 @@ class BaseAdapter:
             s.title = s.title or text.splitlines()[0][:120]
             s.latestAgentState = "incomplete"
         elif role == "assistant":
+            if (len(text) >= _LONG_PLAN_TEXT_LIMIT and text.isascii()
+                    and not _ASCII_LINE_BREAK_PATTERN.search(text)):
+                if _ASCII_PLAN_PATTERN.search(text.lower()):
+                    s.possibleTodos.append({"task": text[:500], "status": "UNCERTAIN",
+                                            "evidence": ["natural-language plan; execution not established"]})
+                return
             for line in text.splitlines():
-                if re.search(r"(?i)(next I will|I will |plan to |TODO|接下来|下一步|计划|将实现)", line):
+                if PLAN_PATTERN.search(line):
                     s.possibleTodos.append({"task": line[:500], "status": "UNCERTAIN", "evidence": ["natural-language plan; execution not established"]})
 
     def call(self, s, call_id, name, args):
@@ -97,20 +175,43 @@ class BaseAdapter:
                 args = {"raw": args}
         if not isinstance(args, dict):
             args = {"raw": str(args)}
-        s.toolCalls.append({"id": str(call_id), "name": str(name), "arguments": args, "cwd": s.cwd, "output": None, "status": "UNCERTAIN"})
+        call = {"id": str(call_id), "name": str(name), "arguments": args, "cwd": s.cwd,
+                "output": None, "status": "UNCERTAIN"}
+        s.toolCalls.append(call)
+        index = getattr(s, "_toolCallById", None)
+        if index is not None:
+            index[call["id"]] = call
         s.latestAgentState = "incomplete"
+
+    def find_tool_call(self, s, call_id):
+        """Return the newest matching call, maintaining the old reverse-search rule."""
+        index = getattr(s, "_toolCallById", None)
+        if index is None:
+            index = {}
+            for call in s.toolCalls:
+                index[call["id"]] = call
+            s._toolCallById = index
+        return index.get(str(call_id))
 
     def result(self, s, call_id, output, failed=False):
         if isinstance(output, list):
             output = text_content(output)
-        for call in reversed(s.toolCalls):
-            if call["id"] == str(call_id):
-                call["output"] = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
-                call["status"] = "FAILED" if failed else "UNCERTAIN"
-                return
+        call = self.find_tool_call(s, call_id)
+        if call is not None:
+            call["output"] = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+            call["status"] = "FAILED" if failed else "UNCERTAIN"
+            return
         s.parseWarnings.append("orphan tool result: " + str(call_id))
 
+    def event_file_operations(self, call):
+        """Adapter-owned structured event evidence; never execute source text."""
+        return []
+
     def finish(self, s):
+        collect_event_operations = (
+            type(self).event_file_operations is not BaseAdapter.event_file_operations
+            or "event_file_operations" in self.__dict__
+        )
         for call in s.toolCalls:
             name, args, out = call["name"], call["arguments"], call["output"]
             evidence = ["tool call " + call["id"]]
@@ -118,24 +219,28 @@ class BaseAdapter:
                 evidence.append("no completion result")
                 s.latestAgentState = "incomplete"
             else:
-                code = re.search(r"(?i)(?:exit(?:ed with)? code|Process exited with code)[:\s]+(-?\d+)", out)
-                try:
-                    structured = json.loads(out)
-                except ValueError:
-                    structured = None
+                original_out = out
+                structured = None
+                if out.lstrip().startswith(("{", "[")):
+                    try:
+                        structured = json.loads(out)
+                    except ValueError:
+                        pass
                 if isinstance(structured, list):
                     out = text_content(structured)
                     call["output"] = out
                 if out.startswith(("Script failed", "Script error:", "Error:", "Error executing tool")):
                     call["status"] = "FAILED"
                 exit_code = structured.get("exit_code") if isinstance(structured, dict) else None
-                if exit_code is None and code:
-                    exit_code = int(code[1])
+                if exit_code is None:
+                    code = _EXIT_CODE_PATTERN.search(original_out)
+                    if code:
+                        exit_code = int(code[1])
                 if exit_code is not None:
                     call["status"] = "COMPLETED" if exit_code == 0 and call["status"] != "FAILED" else "FAILED"
                     evidence.append(f"historical exit code {exit_code}")
                 elif call["status"] != "FAILED" and name in ("Write", "Edit", "MultiEdit", "apply_patch", "functions.apply_patch"):
-                    if re.search(r"(?i)(success|updated|created|applied)", out):
+                    if _FILE_TOOL_SUCCESS_PATTERN.search(out):
                         call["status"] = "COMPLETED"
                         evidence.append("historical file tool success")
                 if call["status"] == "FAILED":
@@ -143,27 +248,32 @@ class BaseAdapter:
             call["evidence"] = evidence
             command = args.get("command", args.get("cmd"))
             if command:
-                item = {"task": str(command), "cwd": args.get("workdir", args.get("cwd", call.get("cwd", ""))), "status": call["status"], "evidence": evidence, "output": out}
+                command_text = str(command)
+                item = {"task": command_text, "cwd": args.get("workdir", args.get("cwd", call.get("cwd", ""))), "status": call["status"], "evidence": evidence, "output": out}
                 s.commands.append(item)
-                if re.search(r"(?i)(\b(pytest|unittest|vitest|jest)\b|\b(npm|pnpm|yarn|cargo|go)\s+test\b|\bnode\s+--test\b)", str(command)):
+                if _TEST_RUN_PATTERN.search(command_text):
                     s.testRuns.append(item.copy())
-            path = args.get("file_path", args.get("path"))
-            paths = [path] if isinstance(path, str) and name in ("Write", "Edit", "MultiEdit") else []
-            if "apply_patch" in name:
-                paths += re.findall(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", str(args.get("raw", args.get("patch", ""))), re.M)
-            for path in paths:
-                operation = {"path": path, "cwd": call.get("cwd", ""), "task": name + " " + path, "status": call["status"], "evidence": evidence}
-                if name == "Write" and isinstance(args.get("content"), str):
-                    operation["expectedSha256"] = hashlib.sha256(args["content"].encode()).hexdigest()
-                if "apply_patch" in name:
-                    patch = str(args.get("raw", args.get("patch", "")))
-                    marker = "*** Add File: " + path + "\n"
-                    if marker in patch:
-                        body = patch.split(marker, 1)[1].split("*** ", 1)[0]
-                        lines = body.splitlines()
-                        if lines and all(line.startswith("+") for line in lines):
-                            operation["expectedSha256"] = hashlib.sha256(("\n".join(line[1:] for line in lines) + "\n").encode()).hexdigest()
-                s.fileOperations.append(operation)
+            if name in _FILE_OPERATION_TOOLS or "apply_patch" in name:
+                path = args.get("file_path", args.get("path"))
+                paths = [path] if isinstance(path, str) and name in _FILE_OPERATION_TOOLS else []
+                is_patch_tool = "apply_patch" in name
+                if is_patch_tool:
+                    paths += re.findall(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", str(args.get("raw", args.get("patch", ""))), re.M)
+                for path in paths:
+                    operation = {"path": path, "cwd": call.get("cwd", ""), "task": name + " " + path, "status": call["status"], "evidence": evidence}
+                    if name == "Write" and isinstance(args.get("content"), str):
+                        operation["expectedSha256"] = hashlib.sha256(args["content"].encode()).hexdigest()
+                    if is_patch_tool:
+                        patch = str(args.get("raw", args.get("patch", "")))
+                        marker = "*** Add File: " + path + "\n"
+                        if marker in patch:
+                            body = patch.split(marker, 1)[1].split("*** ", 1)[0]
+                            lines = body.splitlines()
+                            if lines and all(line.startswith("+") for line in lines):
+                                operation["expectedSha256"] = hashlib.sha256(("\n".join(line[1:] for line in lines) + "\n").encode()).hexdigest()
+                    s.fileOperations.append(operation)
+            if collect_event_operations:
+                s.fileOperations.extend(self.event_file_operations(call))
             if name.endswith("update_plan") or name == "TodoWrite":
                 for todo in args.get("plan", args.get("todos", [])):
                     if isinstance(todo, dict):
@@ -180,6 +290,8 @@ class BaseAdapter:
             s.parseWarnings.append("unknown record types: " + ", ".join(s.unknownTypes[:20]))
         if any("incomplete trailing" in w for w in s.parseWarnings):
             s.latestAgentState = "incomplete"
+        if hasattr(s, "_toolCallById"):
+            del s._toolCallById
 
     def unknown(self, s, kind):
         if str(kind) not in s.unknownTypes:

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { install, mentionAtEnd, localClient } from '../tui.mjs';
+import { install, mentionAtEnd, localClient, sessionArgs } from '../tui.mjs';
 
 const tick = () => new Promise(setImmediate);
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return { promise, resolve, reject }; };
@@ -17,7 +17,7 @@ function harness() {
     ui: { dialog, toast(value) { notices.push(value); }, DialogSelect(props) { return props; }, Prompt(props) { props.ref(prompt); return props; } },
   };
   install(api, {
-    sessions(agent, signal) { const d = deferred(); searches.push({ ...d, agent, signal }); return d.promise; },
+    sessions(agent, signal, query) { const d = deferred(); searches.push({ ...d, agent, signal, query }); return d.promise; },
     context(row, signal) { const d = deferred(); reads.push({ ...d, row, signal }); return d.promise; },
   }, segment => /[\u3000-\u9fff]|\p{Extended_Pictographic}/u.test(segment) ? 2 : segment.length);
   const props = slots.home_prompt({});
@@ -95,6 +95,36 @@ test('all six source mentions and literal metadata filters are recognized', () =
     assert.deepEqual(mentionAtEnd(`继续 @${agent}:登录`), { agent, query: '登录', start: 3, end: agent.length + 7 });
   }
   assert.throws(() => localClient({ args: 'unsafe' }));
+});
+
+test('local CLI uses a bounded indexed query and falls back for older CLIs', async () => {
+  const request = sessionArgs('codex', 'older');
+  assert.deepEqual(request, { args: ['sessions', '--agent', 'codex', '--json', '--query', 'older', '--limit', '51'], bounded: true });
+  assert.equal(sessionArgs('codex', 'x'.repeat(121)).bounded, false);
+
+  const calls = [];
+  const client = localClient({ command: 'agentref', execFile(command, args, options, callback) {
+    calls.push({ command, args, options });
+    if (calls.length === 1) callback(Object.assign(new Error('unsupported'), { code: 2 }), '', 'error: unrecognized arguments: --query older --limit 51');
+    else callback(null, JSON.stringify(rows), '');
+  } });
+  const result = await client.sessions('codex', undefined, 'older');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args, ['sessions', '--agent', 'codex', '--json']);
+  assert.equal(result.queryApplied, false);
+  assert.equal(result.rows.length, 2);
+});
+
+test('server-side filtering returns a bounded page and signals additional matches', async () => {
+  const h = harness();
+  h.prompt.current.input = '继续 @codex:older';
+  h.press('tab');
+  assert.equal(h.searches[0].query, 'older');
+  const matches = Array.from({ length: 51 }, (_, i) => ({ agent: 'codex', ref: 'codex:' + i.toString(16).padStart(16, '0'), title: 'Older ' + i, cwd: 'D:/fixture' }));
+  h.searches[0].resolve({ rows: matches, incomplete: false, queryApplied: true, hasMore: true });
+  await tick();
+  assert.equal(h.view.options.length, 50);
+  assert.match(h.view.title, /50\/51\+/);
 });
 
 test('second Tab dispatches the native select command only inside our dialog', async () => {

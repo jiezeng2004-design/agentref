@@ -7,7 +7,12 @@ The plugin uses public prompt slots, prompt references, keymaps, and the host's
 Type `@claude`, `@codex`, `@grok`, `@opencode`, `@antigravity` or `@dsh` at the
 end of the draft and press **Tab**. Use the dialog's search box or Up/Down, then
 **Enter** or **Tab** to select. **Esc** cancels. `@codex:keyword` filters by title,
-workspace or reference before opening the list (up to 50 results).
+workspace basename or session reference/ID prefix in the local index. The dialog
+offers at most 50 recent matches; its title indicates when more matches exist.
+Add a more specific `@agent:keyword` before pressing Tab to find older sessions.
+Older AgentRef CLIs that do not support bounded session queries fall back to the
+full-list behavior, which remains subject to the existing 8 MiB subprocess
+output limit on very large inventories.
 
 Opening, searching and highlighting browse local metadata only. Selecting a
 specific item reads its exact reference and inserts a tracked text attachment

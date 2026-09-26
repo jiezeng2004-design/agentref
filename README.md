@@ -1,6 +1,7 @@
 # AgentRef
 
-[Latest alpha: v0.1.0-alpha.2](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.2)
+[Alpha.3 release](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.3)
+· [Previous alpha.2](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.2)
 · [Original demo](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.1)
 
 Download `AgentRef-Showcase.zip` from the original alpha.1 release, extract it and open `index.html`
@@ -56,6 +57,10 @@ An installed `agentref` command works from any directory. An ambiguous alias
 opens a numbered picker on a terminal; noninteractive callers receive an error.
 Aliases match title, workspace basename or session-ID prefix. MCP clients list
 sessions first and use the selected exact ref, without asking users for UUIDs.
+For bounded list output, use `sessions --query TEXT --limit 50 --offset 0`; the
+default `sessions` command still returns the complete matching inventory. A
+bounded list without `--query` applies ordering and pagination in SQLite before
+loading the selected rows into Python.
 
 Default discovery: `~/.claude/projects`, `$CODEX_HOME/sessions` and
 `$CODEX_HOME/archived_sessions` (`~/.codex` by default). `CLAUDE_CONFIG_DIR` is
@@ -67,7 +72,8 @@ index: `~/.agentref/index.sqlite3`, overridden by `AGENTREF_HOME` or `--data-dir
 
 DSH as a source: `@dsh` in Codex or the DSH Web composer lists DSH sessions;
 `@dsh:keyword` filters the DSH Web list. Install the personal Codex plugin with
-`.venv\Scripts\python scripts/configure_dsh.py`, then use a new Codex task.
+`.venv\Scripts\python scripts/configure_dsh.py --apply`, then use a new Codex task.
+Omit `--apply` to preview targets and effects without running host/helper commands.
 The existing DSH Web plugin must be reloaded/restarted to pick up its rebuilt
 server and client. No automatic restart is performed.
 

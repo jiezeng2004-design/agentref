@@ -143,6 +143,12 @@ def check(agent, count=300, turns=600, width=2048, dsh_compressed=False):
             started = time.perf_counter()
             warm = index.refresh()
             warm_ms = (time.perf_counter() - started) * 1000
+            tracemalloc.start()
+            try:
+                rescanned = index.refresh()
+                _, refresh_peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
             rows = index.sessions()
             row = next(r for r in rows if r["sourcePath"] == selected)
             started = time.perf_counter()
@@ -162,11 +168,12 @@ def check(agent, count=300, turns=600, width=2048, dsh_compressed=False):
             assert len(context) <= CONTEXT_LIMIT
             assert "PRIVATE_REASONING_SENTINEL" not in context
             assert before == hashes(sources)
-            assert not cold["errors"] and not warm["errors"]
+            assert not cold["errors"] and not warm["errors"] and not rescanned["errors"]
             return {"agent": agent, "synthetic": True, "sessions": count, "longMessages": turns,
                     **({"sourceFormat": "jsonl.zstd" if dsh_compressed else "jsonl"} if agent == "dsh" else {}),
                     "messageWidth": width, "coldMs": round(cold_ms, 1), "warmMs": round(warm_ms, 1),
                     "menuMs": round(menu_ms, 1), "contextWithTracingMs": round(context_ms, 1),
+                    "refreshPeakPythonMiB": round(refresh_peak / 1048576, 2),
                     "contextChars": len(context), "peakPythonMiB": round(peak / 1048576, 2),
                     "sourceBytes": sum(p.stat().st_size for p in sources.rglob("*") if p.is_file()),
                     "warmBytesReadCounter": warm["bytesRead"], "snapshotRescan": agent not in ("claude", "codex"),

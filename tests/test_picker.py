@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import call, patch
 from agentref.adapters import CodexAdapter
 from agentref.index import Index
 from agentref.mcp import Server
@@ -77,6 +78,16 @@ class PickerTests(unittest.TestCase):
         result = json.loads(self.server.picker({"query": "task"}))
         self.assertTrue(result["selectionRequired"])
         self.assertEqual(len(result["sessions"]), 2)
+
+    def test_picker_requests_only_enough_rows_to_detect_ambiguity(self):
+        source = self.root / "source"
+        (source / "second.jsonl").write_text((source / "demo.jsonl").read_text(encoding="utf-8"), encoding="utf-8")
+        self.index.refresh()
+        with patch.object(self.index, "matches", wraps=self.index.matches) as matches:
+            result = json.loads(self.server.picker({"query": "task"}))
+        self.assertTrue(result["selectionRequired"])
+        self.assertEqual(len(result["sessions"]), 2)
+        matches.assert_any_call("task", "codex", limit=31, offset=0, include_total=False)
 
     def test_bare_agent_and_whitespace_still_require_selection(self):
         for query in (" ", "@codex", "codex"):

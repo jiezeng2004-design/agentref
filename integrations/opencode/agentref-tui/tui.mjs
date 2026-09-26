@@ -19,28 +19,50 @@ export function mentionAtEnd(input) {
   return { agent: match[1].toLowerCase(), query: match[2] ?? '', start: input.lastIndexOf('@'), end: input.length };
 }
 
+export function sessionArgs(agent, query) {
+  if (!SOURCES.includes(agent)) throw new Error('Unknown source');
+  const args = ['sessions', '--agent', agent, '--json'];
+  const bounded = typeof query === 'string' && query.length <= 120;
+  if (bounded) args.push('--query', query, '--limit', '51');
+  return { args, bounded };
+}
+
 export function localClient(options = {}) {
   const linked = fileURLToPath(new URL('../../../.venv/' + (process.platform === 'win32' ? 'Scripts/agentref.exe' : 'bin/agentref'), import.meta.url));
   const command = options.command || process.env.AGENTREF_COMMAND || (existsSync(linked) ? linked : 'agentref');
   const prefix = options.args ?? [];
+  const invoke = options.execFile || execFile;
   if (typeof command !== 'string' || !Array.isArray(prefix) || prefix.some(x => typeof x !== 'string')) {
     throw new Error('AgentRef command/args configuration is invalid');
   }
   const run = (args, signal) => new Promise((resolve, reject) => {
-    execFile(command, [...prefix, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024, signal }, (error, stdout, stderr) => {
-      if (error) return reject(new Error(signal?.aborted ? '已取消' : `AgentRef 执行失败 (${error.code ?? 'unknown'})；请检查本机 command 配置。`));
+    invoke(command, [...prefix, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024, signal }, (error, stdout, stderr) => {
+      if (error) {
+        const failure = new Error(signal?.aborted ? '已取消' : `AgentRef 执行失败 (${error.code ?? 'unknown'})；请检查本机 command 配置。`);
+        failure.paginationUnsupported = /unrecognized arguments:.*(?:--query|--limit)/.test(stderr);
+        return reject(failure);
+      }
       resolve({ stdout, incomplete: Boolean(stderr.trim()) });
     });
   });
   return {
-    async sessions(agent, signal) {
-      if (!SOURCES.includes(agent)) throw new Error('Unknown source');
-      const result = await run(['sessions', '--agent', agent, '--json'], signal);
+    async sessions(agent, signal, query) {
+      const request = sessionArgs(agent, query);
+      let result;
+      let queryApplied = request.bounded;
+      try {
+        result = await run(request.args, signal);
+      } catch (error) {
+        if (!request.bounded || !error.paginationUnsupported) throw error;
+        queryApplied = false;
+        result = await run(['sessions', '--agent', agent, '--json'], signal);
+      }
       const rows = JSON.parse(result.stdout);
       if (!Array.isArray(rows) || rows.some(row => row.agent !== agent || typeof row.ref !== 'string' || !row.ref.startsWith(agent + ':'))) {
         throw new Error('AgentRef 返回了无效的会话列表');
       }
-      return { rows, incomplete: result.incomplete };
+      return { rows, incomplete: result.incomplete, queryApplied, hasMore: rows.length > 50,
+        total: queryApplied ? undefined : rows.length };
     },
     async context(row, signal) {
       const result = await run(['context', row.ref, '--agent', row.agent], signal);
@@ -80,10 +102,11 @@ export function install(api, client, measure = value => globalThis.Bun.stringWid
 
   async function open(token) {
     try {
-      const result = await client.sessions(token.mention.agent, token.controller.signal);
+      const result = await client.sessions(token.mention.agent, token.controller.signal, token.mention.query);
       if (!unchanged(token)) return;
       const query = token.mention.query.toLowerCase();
-      const rows = result.rows.filter(row => !query || [row.title, row.cwd, row.ref].some(value => String(value ?? '').toLowerCase().includes(query)));
+      const rows = result.queryApplied ? result.rows
+        : result.rows.filter(row => !query || [row.title, row.cwd, row.ref].some(value => String(value ?? '').toLowerCase().includes(query)));
       token.loading = false;
       if (!rows.length) {
         notice(result.incomplete ? '索引不完整，未找到匹配会话；请运行 agentref doctor。' : '没有匹配会话，可使用 @agent:关键词 筛选。');
@@ -96,8 +119,9 @@ export function install(api, client, measure = value => globalThis.Bun.stringWid
         value: row.ref,
       }));
       const selectedRows = new Map(rows.slice(0, 50).map(row => [row.ref, row]));
+      const count = result.queryApplied && result.hasMore ? '51+' : rows.length;
       api.ui.dialog.replace(() => api.ui.DialogSelect({
-        title: `@${token.mention.agent} 会话 (${options.length}/${rows.length})${result.incomplete ? ' · 索引不完整' : ''}`,
+        title: `@${token.mention.agent} 会话 (${options.length}/${count})${result.incomplete ? ' · 索引不完整' : ''}`,
         placeholder: '搜索会话 · ↑↓ 移动 · Enter/Tab 选择 · Esc 取消',
         options,
         onSelect(option) {

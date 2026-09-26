@@ -88,4 +88,20 @@ documented instead of promising all releases with the same version number.
 
 Opaque JavaScript orchestration inside Codex `functions.exec` is retained as a
 tool call but not executed or semantically decomposed into shell commands.
+
+## Codex sideband patch evidence — 2026-09-17
+
+The exact owned test session generated with CLI 0.147.0 on 2026-09-16 emitted
+`event_msg.payload.type=patch_apply_end` separately from an opaque `exec` call.
+The observed payload contains `call_id`, `turn_id`, boolean `success`, a
+`status` of `completed`, and a `changes` object whose add entries have
+`type: add` and full string `content`. The inner event call ID need not equal
+the outer JavaScript orchestration call ID. They must not be guessed equivalent.
+
+Only this add-file shape is now supported. Failure/status validation and
+duplicate/conflict handling are covered by synthetic tests, not claimed as
+observed live failure variants. Exact content hashing preserves newline and
+Unicode distinctions; a matching current file proves bytes, not feature
+acceptance. Update/delete or unknown variants still warn until verified.
+Raw real-session content was not copied into test fixtures.
 Such work may be UNCERTAIN even if a human can infer more from the source.

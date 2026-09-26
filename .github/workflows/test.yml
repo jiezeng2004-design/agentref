@@ -34,4 +34,8 @@ jobs:
       - run: node --test test/*.test.mjs
         working-directory: integrations/dsh/agentref-dsh
       - run: node --test integrations/opencode/agentref-tui/test/*.test.mjs
+      - run: node --check cdp.mjs && node --check broker.mjs && node --check runtime.mjs && node --check client.js
+        working-directory: integrations/antigravity/agentref-runtime
+      - run: node --test test/*.test.mjs
+        working-directory: integrations/antigravity/agentref-runtime
       - run: git diff --exit-code -- integrations/dsh/agentref-dsh/lib

@@ -2,16 +2,28 @@
 import json
 import sys
 import sqlite3
+import inspect
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from . import __version__
 from .handoff import build_context
+from .index import Index
 from .mentions import label, resource_uri, resource_ref
 from .branding import agent_icons
 
 SESSION_TEMPLATE = "agentref://session/{session}"
 
 PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+
+
+def supports_index_paging(method):
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    names = {parameter.name for parameter in parameters}
+    return {"limit", "offset", "include_total"} <= names or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
 
 
 def validate_arguments(value, schema):
@@ -58,29 +70,73 @@ class Server:
         return {"indexIncomplete": bool(self.refresh_warnings), "warnings": self.refresh_warnings,
                 "guidance": "If indexing is incomplete, visible matches may be stale or partial. Do not infer that missing sessions do not exist. Retry after the source is available."}
 
-    def rows(self, agent=None, query=""):
+    def rows(self, agent=None, query="", limit=None, offset=0, include_total=False):
         if self.agent and agent and self.agent != agent:
             raise ValueError("agent not exposed by this server")
         exposed_agent = self.agent or agent
-        rows = self.index.matches(query, exposed_agent) if query else self.index.sessions(exposed_agent)
+        normalized = query.lstrip("@")
+        if include_total and exposed_agent:
+            qualified = normalized.split(":", 1)[0] if ":" in normalized else normalized
+            if qualified in self.index.adapters and qualified != exposed_agent:
+                return [], 0
+        if query:
+            matches = self.index.matches
+            if getattr(matches, "__func__", None) is Index.matches or supports_index_paging(matches):
+                result = matches(query, exposed_agent, limit=limit, offset=offset,
+                                 include_total=include_total)
+                if include_total:
+                    rows, total = result
+                else:
+                    rows = result
+            else:
+                all_rows = matches(query, exposed_agent)
+                if exposed_agent:
+                    all_rows = [row for row in all_rows if row["agent"] == exposed_agent]
+                total = len(all_rows)
+                rows = all_rows[offset:offset + limit] if limit is not None else all_rows[offset:]
+        else:
+            sessions = self.index.sessions
+            if getattr(sessions, "__func__", None) is Index.sessions or supports_index_paging(sessions):
+                rows = sessions(exposed_agent, limit=limit, offset=offset)
+            else:
+                all_rows = sessions(exposed_agent)
+                if exposed_agent:
+                    all_rows = [row for row in all_rows if row["agent"] == exposed_agent]
+                total = len(all_rows)
+                rows = all_rows[offset:offset + limit] if limit is not None else all_rows[offset:]
+            if include_total:
+                if exposed_agent:
+                    total = self.index.db.execute("SELECT count(*) FROM sessions WHERE agent=?",
+                                                  (exposed_agent,)).fetchone()[0]
+                else:
+                    total = self.index.db.execute("SELECT count(*) FROM sessions WHERE agent IN ("
+                                                  + ",".join("?" for _ in self.index.adapters) + ")",
+                                                  list(self.index.adapters)).fetchone()[0] if self.index.adapters else 0
         # A qualified query must never override the server's agent boundary.
-        return [r for r in rows if not exposed_agent or r["agent"] == exposed_agent]
+        rows = [row for row in rows if not exposed_agent or row["agent"] == exposed_agent]
+        return (rows, total) if include_total else rows
 
     def mention_items(self, args):
         query = args.get("query", "")
         if not isinstance(query, str) or not isinstance(args.get("path", []), list):
             raise ValueError("invalid mention query")
         self.refresh()
-        rows = self.rows(query=query.strip())
+        rows_method = self.rows
+        if getattr(rows_method, "__func__", None) is Server.rows:
+            rows, total = rows_method(query=query.strip(), limit=100, include_total=True)
+        else:
+            rows = rows_method(query=query.strip())
+            total = len(rows)
+            rows = rows[:100]
         return {"items": [{"type": "resource", "title": label(row),
                            "resourceUri": resource_uri(row),
-                           "icons": agent_icons(row["agent"])} for row in rows[:100]],
-                "total": len(rows), "hasMore": len(rows) > 100, **self.diagnostics()}
+                           "icons": agent_icons(row["agent"])} for row in rows],
+                "total": total, "hasMore": total > 100, **self.diagnostics()}
 
     def picker(self, args):
         self.refresh()
         query = args.get("query", "").strip()
-        rows = self.rows(args.get("agent"), query)
+        rows = self.rows(args.get("agent"), query, limit=31)
         if not rows:
             if self.refresh_warnings:
                 return json.dumps({"selectionRequired": False, "sourceUnavailable": True, **self.diagnostics()}, ensure_ascii=False)
@@ -149,17 +205,21 @@ class Server:
             if self.template_menu:
                 return {"resources": []}
             self.refresh()
-            rows = self.rows()
             start = int(p.get("cursor", 0))
             if start < 0:
                 raise ValueError("invalid cursor")
-            result = {"resources": [{"uri": resource_uri(r, start + i + 1), "name": r["agent"] + ": " + label(r, start + i + 1), "description": label(r, start + i + 1), "mimeType": "text/markdown"} for i, r in enumerate(rows[start:start + 100])]}
-            if start + 100 < len(rows):
+            page = self.index.sessions(self.agent, limit=101, offset=start)
+            rows = page[:100]
+            result = {"resources": [{"uri": resource_uri(r, start + i + 1), "name": r["agent"] + ": " + label(r, start + i + 1), "description": label(r, start + i + 1), "mimeType": "text/markdown"} for i, r in enumerate(rows)]}
+            if len(page) > 100:
                 result["nextCursor"] = str(start + 100)
             result["_meta"] = self.diagnostics()
             return result
         if method == "resources/templates/list":
-            return {"resourceTemplates": [{"uriTemplate": SESSION_TEMPLATE, "name": self.agent or "AgentRef", "description": "按最近更新时间选择会话；Tab 展开候选", "mimeType": "text/markdown"}]}
+            # Claude Code appends the template description to every completion
+            # row. Omit it so the native Tab menu shows only each session title,
+            # like the built-in @claude picker.
+            return {"resourceTemplates": [{"uriTemplate": SESSION_TEMPLATE, "name": self.agent or "AgentRef", "mimeType": "text/markdown"}]}
         if method == "completion/complete":
             if not isinstance(p.get("ref"), dict) or not isinstance(p.get("argument"), dict):
                 raise ValueError("invalid completion target")
@@ -169,11 +229,14 @@ class Server:
             if not isinstance(query, str):
                 raise ValueError("invalid completion query")
             self.refresh()
-            rows = self.rows(query=query)
-            all_rows = self.rows()
-            aliases = self.index.mention_aliases(all_rows)
-            values = [aliases[row["ref"]] for row in rows[:100]]
-            return {"completion": {"values": values, "total": len(rows), "hasMore": len(rows) > 100}, "_meta": self.diagnostics()}
+            self.index.ensure_mention_alias_inventory(self.agent)
+            rows, total = self.rows(query=query, limit=100, include_total=True)
+            if not self.index.mention_alias_inventory_is_current(self.agent):
+                self.index.ensure_mention_alias_inventory(self.agent, force=True)
+                rows, total = self.rows(query=query, limit=100, include_total=True)
+            aliases = self.index.mention_aliases(rows)
+            values = [aliases[row["ref"]] for row in rows]
+            return {"completion": {"values": values, "total": total, "hasMore": total > 100}, "_meta": self.diagnostics()}
         if method == "resources/read":
             uri = p.get("uri", "")
             if not isinstance(uri, str):
@@ -185,10 +248,11 @@ class Server:
                 if len(token) < 8 or any(c not in "0123456789abcdef" for c in token):
                     raise ValueError("invalid resource token")
                 self.refresh()
-                rows = [r for r in self.rows() if r["ref"].split(":", 1)[1].startswith(token)]
+                rows = self.index.refs_with_prefix(token, self.agent, limit=2)
                 if len(rows) != 1:
                     raise ValueError("ambiguous or stale resource token")
                 ref = rows[0]["ref"]
+                context = self._context_after_refresh(ref, rows[0]["agent"])
             else:
                 ref = resource_ref(uri)
                 aliases = self.index.db.execute("SELECT agent, ref FROM mention_aliases WHERE alias=?", (ref,)).fetchall()
@@ -197,7 +261,7 @@ class Server:
                     raise ValueError("ambiguous resource alias")
                 if aliases:
                     ref = aliases[0]["ref"]
-            context = self.context(ref)
+                context = self.context(ref)
             return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": context}]}
         if method == "tools/list":
             return {"tools": [
@@ -240,9 +304,20 @@ class Server:
                 return {"isError": True, "content": [{"type": "text", "text": "Invalid or unavailable reference. List sessions and select an exact ref."}]}
         raise LookupError("method not found")
 
-    def context(self, ref, workspace=None):
-        self.refresh()
-        rows = [r for r in self.rows() if r["ref"] == ref]
+    def _reference_source(self, ref):
+        if not isinstance(ref, str) or ":" not in ref:
+            raise ValueError("exact indexed reference required")
+        source, token = ref.split(":", 1)
+        if (source not in self.index.adapters or (self.agent and source != self.agent)
+                or len(token) != 16 or any(char not in "0123456789abcdef" for char in token)):
+            raise ValueError("exact indexed reference required")
+        return source
+
+    def _context_after_refresh(self, ref, source, workspace=None):
+        if self._reference_source(ref) != source:
+            raise ValueError("exact indexed reference required")
+        rows = self.index.matches(ref, source, limit=1)
+        rows = [row for row in rows if row["ref"] == ref and row["agent"] == source]
         if len(rows) != 1:
             raise ValueError("exact indexed reference required")
         if workspace:
@@ -254,6 +329,11 @@ class Server:
         session = self.index.read(rows[0])
         session.parseWarnings.extend("index refresh incomplete: " + warning for warning in self.refresh_warnings)
         return build_context(session, workspace or self.workspace)
+
+    def context(self, ref, workspace=None):
+        source = self._reference_source(ref)
+        self.refresh()
+        return self._context_after_refresh(ref, source, workspace)
 
     def serve(self, source=None, sink=None):
         source, sink = source or sys.stdin, sink or sys.stdout

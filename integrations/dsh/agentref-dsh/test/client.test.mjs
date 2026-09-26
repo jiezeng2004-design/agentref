@@ -63,6 +63,42 @@ const choices = [
   { agent: 'dsh', ref: 'dsh:22222222', title: 'Second synthetic session' },
 ];
 
+test('incomplete-index warnings are visible for populated and empty lists without reading context', async () => {
+  for (const sessions of [choices, []]) {
+    const h = await searchHarness();
+    press(h, 'Tab');
+    h.requests[0].resolve({ ok: true, json: async () => ({ ok: true, sessions, incomplete: true }) });
+    await new Promise(setImmediate);
+    const state = h.STATE.get(h.input);
+    const text = state.menu.children.map(child => child.textContent ?? '').join('\n');
+    assert.match(text, /索引可能不完整/);
+    if (!sessions.length) assert.match(text, /不代表来源中没有会话/);
+    assert.equal(state.buttons.length, sessions.length);
+    assert.equal(h.requests.length, 1);
+    assert.equal(state.selection, undefined);
+    press(h, 'Escape');
+    assert.equal(state.menu, undefined);
+    assert.equal(h.requests.length, 1);
+  }
+});
+
+test('warning rows do not shift keyboard selection and healthy refresh clears the warning', async () => {
+  const h = await searchHarness();
+  press(h, 'Tab');
+  h.requests[0].resolve({ ok: true, json: async () => ({ ok: true, sessions: choices, incomplete: true }) });
+  await new Promise(setImmediate);
+  press(h, 'ArrowDown'); press(h, 'Tab');
+  assert.ok(h.requests[1].url.includes('dsh%3A22222222'));
+  press(h, 'Escape');
+  h.requests[1].resolve({ ok: true, json: async () => ({ ok: true, context: 'STALE_CONTEXT' }) });
+  await new Promise(setImmediate);
+  assert.equal(h.input.value, '@dsh');
+  press(h, 'Tab');
+  h.requests[2].resolve({ ok: true, json: async () => ({ ok: true, sessions: choices, incomplete: false }) });
+  await new Promise(setImmediate);
+  assert.ok(!h.STATE.get(h.input).menu.children.some(child => (child.textContent ?? '').includes('索引可能不完整')));
+});
+
 test('Tab opens immediately, arrows browse metadata, second Tab selects only the highlighted ref', async () => {
   const h = await searchHarness();
   h.input.handlers.input();

@@ -11,11 +11,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agentref.adapters import ClaudeAdapter, CodexAdapter
+from agentref.adapters.base import BaseAdapter
 from agentref.core import SessionIR
 from agentref.handoff import reconcile, build_context, safe_file
 from agentref.index import Index
 from agentref.mcp import Server
-from agentref.parser import read_jsonl
+from agentref.parser import read_jsonl, scan_jsonl
 from agentref.cli import select
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -60,6 +61,13 @@ class AgentRefTests(unittest.TestCase):
         self.assertEqual(s.latestAgentState, "turn-ended")
         self.assertEqual(s.versions, ["0.147.0"])
 
+    def test_json_export_matches_dict_without_serializing_dynamic_indexes(self):
+        session = SessionIR("codex", messages=[{"role": "user", "text": "合成会话"}],
+                            toolCalls=[{"id": "one", "name": "shell", "arguments": {"command": "test"}}])
+        session._toolCallById = {"one": session.toolCalls[0]}
+        self.assertEqual(json.loads(session.to_json()), session.to_dict())
+        self.assertNotIn("_toolCallById", json.loads(session.to_json()))
+
     def test_fork_keeps_first_identity(self):
         p, a = self.fixture()
         self.append(p, {"type": "session_meta", "payload": {"id": "parent-session", "cwd": "/parent"}})
@@ -100,6 +108,46 @@ class AgentRefTests(unittest.TestCase):
         self.assertEqual(len(s.toolCalls), before)
         self.assertTrue(any("trailing" in x for x in s.parseWarnings))
 
+    def test_streaming_jsonl_matches_collected_reader_and_is_used_for_session_reads(self):
+        path = self.sources / "streaming.jsonl"
+        path.write_bytes(b'\xef\xbb\xbf{"type":"user","sessionId":"streamed","message":{"content":"goal"}}\n\xef\xbb\xbf[]\nnot-json\n{"tail":')
+        expected_records, expected_end, expected_warnings = read_jsonl(path)
+        streamed = []
+        end, warnings = scan_jsonl(path, consume=streamed.append)
+        self.assertEqual(streamed, expected_records)
+        self.assertEqual((end, warnings), (expected_end, expected_warnings))
+
+        source, adapter = self.fixture()
+        with patch("agentref.adapters.base.read_jsonl", side_effect=AssertionError("list parser used")):
+            session = adapter.readSession(source)
+            index = self.index(adapter)
+            self.assertGreater(index.refresh()["bytesRead"], 0)
+        self.assertEqual(session.sessionId, "codex-demo")
+
+    def test_streaming_jsonl_byte_cursor_handles_oversize_and_partial_tail(self):
+        path = self.sources / "cursor.jsonl"
+        first = b'{"ok":true}\n'
+        oversized = b"x" * 17 + b"\n"
+        trailing = b'{"tail":'
+        path.write_bytes(first + oversized + trailing)
+        expected_offset = len(first) + len(oversized)
+        with patch("agentref.parser.MAX_LINE", 16):
+            records = []
+            offset, warnings = scan_jsonl(path, consume=records.append)
+            self.assertEqual(records, [{"ok": True}])
+            self.assertEqual(offset, expected_offset)
+            self.assertEqual(warnings, [
+                f"oversize record at byte {len(first)}; skipped",
+                f"incomplete trailing JSONL at byte {expected_offset}; retry later",
+            ])
+
+            restarted = []
+            restarted_offset, restarted_warnings = scan_jsonl(
+                path, path.stat().st_size + 1, consume=restarted.append)
+            self.assertEqual(restarted, records)
+            self.assertEqual(restarted_offset, offset)
+            self.assertEqual(restarted_warnings, ["source truncated; restart at zero", *warnings])
+
     def test_unmatched_call(self):
         p, a = self.fixture()
         self.append(p, {"type": "response_item", "payload": {"type": "function_call", "call_id": "pending", "name": "exec_command", "arguments": '{"cmd":"npm test"}'}})
@@ -107,10 +155,68 @@ class AgentRefTests(unittest.TestCase):
         self.assertEqual(s.testRuns[-1]["status"], "UNCERTAIN")
         self.assertEqual(s.latestAgentState, "incomplete")
 
+    def test_tool_result_index_preserves_newest_duplicate_call_id(self):
+        adapter = ClaudeAdapter([])
+        session = SessionIR("claude")
+        adapter.call(session, "reused", "first", {})
+        adapter.result(session, "reused", "first result")
+        adapter.call(session, "reused", "second", {})
+        adapter.result(session, "reused", "second result")
+        self.assertEqual([call["output"] for call in session.toolCalls], ["first result", "second result"])
+        self.assertEqual(adapter.find_tool_call(session, "reused")["name"], "second")
+        self.assertNotIn("_toolCallById", session.to_dict())
+        adapter.finish(session)
+        self.assertFalse(hasattr(session, "_toolCallById"))
+        adapter.result(session, "missing", "orphan")
+        self.assertTrue(any("orphan tool result" in warning for warning in session.parseWarnings))
+
     def test_plan_is_not_completed(self):
         p, a = self.fixture()
         self.assertTrue(a.readSession(p).possibleTodos)
         self.assertTrue(all(t["status"] != "COMPLETED" for t in a.readSession(p).possibleTodos))
+
+    def test_assistant_plan_detection_keeps_existing_phrases_and_ignores_user_text(self):
+        adapter = BaseAdapter([])
+        session = SessionIR("fixture")
+        text = "\n".join(("NEXT I WILL inspect", "I will verify", "Plan to finish",
+                           "TODO confirm", "接下来处理", "下一步检查", "计划继续", "将实现", "ordinary line"))
+        adapter.message(session, "assistant", text)
+        tasks = [item["task"] for item in session.possibleTodos]
+        self.assertEqual(tasks, text.splitlines()[:-1])
+        adapter.message(session, "user", "TODO should not be parsed")
+        self.assertEqual([item["task"] for item in session.possibleTodos], tasks)
+
+    def test_long_ascii_plan_prefilter_keeps_multiline_semantics(self):
+        adapter = BaseAdapter([])
+        no_hit = SessionIR("fixture")
+        adapter.message(no_hit, "assistant", "Routine status update.\n" * 20000)
+        self.assertEqual(no_hit.possibleTodos, [])
+
+        one_line = "Routine output " + ("x" * (300 * 1024)) + " TODO finish"
+        hit = SessionIR("fixture")
+        adapter.message(hit, "assistant", one_line)
+        self.assertEqual([item["task"] for item in hit.possibleTodos], [one_line[:500]])
+
+        separated = "x" * (300 * 1024) + "\vTODO marker"
+        split_hit = SessionIR("fixture")
+        adapter.message(split_hit, "assistant", separated)
+        self.assertEqual([item["task"] for item in split_hit.possibleTodos], ["TODO marker"])
+
+    def test_finish_output_fast_paths_preserve_exit_and_fallback_statuses(self):
+        adapter = BaseAdapter([])
+        session = SessionIR("fixture")
+        cases = (
+            ("json-success", "{\"exit_code\":0}", "COMPLETED"),
+            ("json-whitespace", "  {\"exit_code\":0}", "COMPLETED"),
+            ("text-failure", "Process exited with code 1", "FAILED"),
+            ("plain-output", "0", "UNCERTAIN"),
+        )
+        for index, (call_id, output, _status) in enumerate(cases):
+            adapter.call(session, call_id, "shell", {"command": f"command-{index}"})
+            adapter.result(session, call_id, output)
+        adapter.finish(session)
+        self.assertEqual([call["status"] for call in session.toolCalls],
+                         [status for _, _, status in cases])
 
     def test_changed_file_evidence(self):
         p, a = self.fixture()
@@ -211,6 +317,7 @@ class AgentRefTests(unittest.TestCase):
         p, a = self.fixture()
         idx = self.index(a)
         idx.refresh()
+        self.assertEqual(a._discovered_stats, {})
         p.write_text('{"type":"session_meta","payload":{"id":"replacement"}}\n')
         idx.refresh()
         self.assertEqual(idx.sessions()[0]["sessionId"], "replacement")
@@ -230,6 +337,28 @@ class AgentRefTests(unittest.TestCase):
             return
         self.assertIsNone(safe_file(self.workspace, "escape/outside.txt"))
 
+    def test_session_discovery_skips_linked_and_subagent_trees(self):
+        nested = self.sources / "project" / "sessions"
+        nested.mkdir(parents=True)
+        session = nested / "visible.jsonl"
+        session.write_text("{}\n", encoding="utf-8")
+        hidden = self.sources / "subagents"
+        hidden.mkdir()
+        (hidden / "agent-child.jsonl").write_text("{}\n", encoding="utf-8")
+        (self.sources / "agent-worker.jsonl").write_text("{}\n", encoding="utf-8")
+        external = self.root / "outside"
+        external.mkdir()
+        (external / "linked.jsonl").write_text("{}\n", encoding="utf-8")
+        try:
+            (self.sources / "linked-dir").symlink_to(external, target_is_directory=True)
+            (self.sources / "linked-file.jsonl").symlink_to(external / "linked.jsonl")
+        except OSError:
+            pass
+
+        adapter = ClaudeAdapter([self.sources])
+        self.assertEqual(adapter.discoverSessions(), [session])
+        self.assertEqual(adapter.discovered_metadata(session)[0], session.stat().st_mtime_ns)
+
     def test_foreign_session_immutable(self):
         p, a = self.fixture()
         before = p.read_bytes()
@@ -248,6 +377,29 @@ class AgentRefTests(unittest.TestCase):
         sink = io.StringIO()
         server.serve(io.StringIO('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}\n'), sink)
         self.assertEqual(json.loads(sink.getvalue())["result"]["protocolVersion"], "2024-11-05")
+
+    def test_mcp_exact_context_uses_ref_lookup_not_full_session_listing(self):
+        _, adapter = self.fixture()
+        index = self.index(adapter)
+        index.refresh()
+        ref = index.sessions()[0]["ref"]
+        server = Server(index, self.workspace, agent="codex")
+        with patch.object(index, "sessions", side_effect=AssertionError("exact context should not list sessions")):
+            context = server.context(ref)
+        self.assertIn("Original Goal", context)
+
+    def test_short_resource_token_reuses_refresh_and_avoids_full_listing(self):
+        p, adapter = self.fixture()
+        index = self.index(adapter)
+        index.refresh()
+        ref = index.sessions()[0]["ref"]
+        token = ref.split(":", 1)[1][:8]
+        server = Server(index, self.workspace, agent="codex")
+        with patch.object(server, "refresh", wraps=server.refresh) as refresh, \
+                patch.object(index, "sessions", side_effect=AssertionError("token lookup should not list sessions")):
+            result = server.dispatch("resources/read", {"uri": "agentref://session/legacy~" + token})
+        self.assertIn("Original Goal", result["contents"][0]["text"])
+        self.assertEqual(refresh.call_count, 1)
 
     def test_cli_subprocess(self):
         p, _ = self.fixture()

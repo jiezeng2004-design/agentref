@@ -121,7 +121,7 @@ async function fetchSessions(agent, query, signal) {
   const response = await fetch(`${API}/sessions?agent=${encodeURIComponent(agent)}&query=${encodeURIComponent(query)}`, { cache: 'no-store', signal });
   const body = await response.json();
   if (!response.ok || body.ok !== true || !Array.isArray(body.sessions)) throw new Error(body.error || '无法读取本地会话');
-  return body.sessions;
+  return { rows: body.sessions, incomplete: body.incomplete === true };
 }
 
 async function fetchContext(ref) {
@@ -131,7 +131,7 @@ async function fetchContext(ref) {
   return body.context;
 }
 
-function renderMenu(textarea, mention, rows) {
+function renderMenu(textarea, mention, rows, incomplete = false) {
   const state = STATE.get(textarea);
   if (!state || state.mention !== mention) return;
   removeMenu(state);
@@ -142,10 +142,17 @@ function renderMenu(textarea, mention, rows) {
   head.className = 'dsh-agentref-head';
   head.textContent = `${agentLabel(mention.agent)} 会话 · Tab 展开 · ↑↓ 移动 · Tab/Enter 选择 · Esc 取消`;
   menu.appendChild(head);
+  if (incomplete) {
+    const warning = document.createElement('div');
+    warning.className = 'dsh-agentref-error';
+    warning.setAttribute('role', 'status');
+    warning.textContent = '索引可能不完整，候选可能缺失或过期；请在本机运行 agentref doctor 检查。';
+    menu.appendChild(warning);
+  }
   if (rows.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'dsh-agentref-error';
-    empty.textContent = '没有匹配的会话；可在 @agent:关键词 中筛选。';
+    empty.textContent = incomplete ? '当前可用索引中没有匹配项，不代表来源中没有会话。' : '没有匹配的会话；可在 @agent:关键词 中筛选。';
     menu.appendChild(empty);
   }
   for (const row of rows) {
@@ -219,8 +226,8 @@ function refresh(textarea, immediate = false) {
     if (!textarea.isConnected || state.request !== token) return;
     const controller = new AbortController();
     state.searchController = controller;
-    fetchSessions(mention.agent, mention.query, controller.signal).then((rows) => {
-      if (textarea.isConnected && STATE.get(textarea)?.request === token) renderMenu(textarea, mention, rows);
+    fetchSessions(mention.agent, mention.query, controller.signal).then(({ rows, incomplete }) => {
+      if (textarea.isConnected && STATE.get(textarea)?.request === token) renderMenu(textarea, mention, rows, incomplete);
     }).catch((error) => {
       if (textarea.isConnected && STATE.get(textarea)?.request === token) showError(textarea, error instanceof Error ? error.message : '无法读取本地会话');
     }).finally(() => {

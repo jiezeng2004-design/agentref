@@ -3,11 +3,15 @@
 Only public user/assistant text and structured tool metadata are interpreted.
 Thinking, signatures, model configuration and arbitrary binary strings are ignored.
 """
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sqlite3
 from urllib.parse import unquote, urlsplit
 from ..core import SessionIR
 from .snapshot import SnapshotAdapter, timestamp
 from .protobuf import fields, first, string
+
+_METADATA_SCAN_ERROR = object()
 
 
 def proto_time(data):
@@ -30,15 +34,26 @@ def local_path(uri):
 
 class AntigravityAdapter(SnapshotAdapter):
     agent = "antigravity"
+    metadata_parallel_threshold = 32
+    metadata_workers = 8
 
     def metadata(self, db, path):
-        meta = db.execute("SELECT trajectory_id FROM trajectory_meta LIMIT 1").fetchone()
-        if meta is None:
+        row = db.execute("""SELECT meta.trajectory_id, blob.data AS metadata_blob,
+                                  first_user.step_payload AS first_user_payload,
+                                  first_user.step_format AS first_user_format,
+                                  last_step.metadata AS last_metadata,
+                                  last_step.status AS last_status
+                           FROM (SELECT trajectory_id FROM trajectory_meta LIMIT 1) AS meta
+                           LEFT JOIN (SELECT data FROM trajectory_metadata_blob LIMIT 1) AS blob ON 1=1
+                           LEFT JOIN (SELECT step_payload,step_format FROM steps
+                                      WHERE step_type=14 ORDER BY idx LIMIT 1) AS first_user ON 1=1
+                           LEFT JOIN (SELECT metadata,status FROM steps
+                                      ORDER BY idx DESC LIMIT 1) AS last_step ON 1=1""").fetchone()
+        if row is None or row["trajectory_id"] is None:
             raise ValueError("missing Antigravity trajectory identity")
-        s = SessionIR(agent=self.agent, sessionId=meta[0], sourcePath=str(path))
-        blob = db.execute("SELECT data FROM trajectory_metadata_blob LIMIT 1").fetchone()
-        if blob:
-            m = fields(blob[0])
+        s = SessionIR(agent=self.agent, sessionId=row["trajectory_id"], sourcePath=str(path))
+        if row["metadata_blob"] is not None:
+            m = fields(row["metadata_blob"])
             # Subagents must not be listed as unrelated main conversations.
             if first(m, 8):
                 return None
@@ -46,23 +61,51 @@ class AntigravityAdapter(SnapshotAdapter):
             uris = [v.decode("utf-8") for v in m.get(7, [])]
             for workspace in m.get(1, []):
                 uris.append(string(fields(workspace), 1))
-            s.cwd = next((local_path(u) for u in uris if local_path(u)), "")
-        first_user = db.execute("SELECT step_payload,step_format FROM steps WHERE step_type=14 ORDER BY idx LIMIT 1").fetchone()
-        if first_user and first_user[1] == 0:
-            s.title = user_text(fields(first_user[0])).split("\n", 1)[0][:120]
-        last = db.execute("SELECT metadata,status FROM steps ORDER BY idx DESC LIMIT 1").fetchone()
-        if last:
-            m = fields(last[0] or b"")
+            for uri in uris:
+                s.cwd = local_path(uri)
+                if s.cwd:
+                    break
+        if row["first_user_payload"] is not None and row["first_user_format"] == 0:
+            s.title = user_text(fields(row["first_user_payload"])).split("\n", 1)[0][:120]
+        if row["last_metadata"] is not None or row["last_status"] is not None:
+            m = fields(row["last_metadata"] or b"")
             s.updatedAt = proto_time(first(m, 8) or first(m, 22) or first(m, 1))
-            s.latestAgentState = "incomplete" if last[1] in (1, 2, 6, 7, 8, 9, 11, 12) else "unknown"
+            s.latestAgentState = "incomplete" if row["last_status"] in (1, 2, 6, 7, 8, 9, 11, 12) else "unknown"
         s.updatedAt = s.updatedAt or timestamp(path.stat().st_mtime)
         return s
 
     def scan_metadata(self):
+        paths = [p for root in self.roots for p in sorted(root.glob("*.db"))]
+        if len(paths) < self.metadata_parallel_threshold:
+            def read(path):
+                with self.database(path) as db:
+                    return self.metadata(db, path)
+            yield from self.scan_files(paths, read)
+            return
+
+        self.scan_errors = []
+
         def read(path):
-            with self.database(path) as db:
-                return self.metadata(db, path)
-        yield from self.scan_files((p for root in self.roots for p in sorted(root.glob("*.db"))), read)
+            try:
+                with self.database(path) as db:
+                    return self.metadata(db, path)
+            except (OSError, ValueError, TypeError, KeyError, AttributeError, sqlite3.Error):
+                return _METADATA_SCAN_ERROR
+
+        batch_size = max(1, min(8, len(paths) // (self.metadata_workers * 4)))
+        batches = (paths[start:start + batch_size]
+                   for start in range(0, len(paths), batch_size))
+
+        def read_batch(batch):
+            return [read(path) for path in batch]
+
+        with ThreadPoolExecutor(max_workers=self.metadata_workers, thread_name_prefix="agentref-ag-metadata") as pool:
+            for batch_results in pool.map(read_batch, batches):
+                for result in batch_results:
+                    if result is _METADATA_SCAN_ERROR:
+                        self.scan_errors.append(self.agent + ": source metadata unavailable or unsupported")
+                    elif result is not None:
+                        yield result
 
     def readSession(self, path):
         path = self.checked(path)

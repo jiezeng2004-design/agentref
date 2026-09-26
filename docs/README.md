@@ -35,6 +35,8 @@ The receiving model/client may transmit attached context under its own policies.
 
 ## Verification
 
+- [Current acceptance matrix](CURRENT_ACCEPTANCE.md): baseline commit, local
+  unpublished changes, dated remote evidence and remaining native/model gates.
 - [Development checks](DEVELOPMENT_CHECKS.md): reproducible local commands and their limits.
 - [Script safety index](SCRIPTS.md): synthetic checks versus installed-host inspection,
   configuration writes, and real-model execution.

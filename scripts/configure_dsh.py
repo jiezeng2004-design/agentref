@@ -1,4 +1,5 @@
-"""Install/update only the personal Codex @dsh plugin; no DSH runtime restart."""
+"""Preview/install only the personal Codex @dsh plugin; no DSH runtime restart."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -9,11 +10,23 @@ import sys
 from plugin_branding import apply_branding
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apply", action="store_true", help="Allow plugin files, marketplace and host installation changes")
+    args = parser.parse_args(argv)
     repo = Path(__file__).resolve().parents[1]
     helpers = Path.home() / ".codex/skills/.system/plugin-creator/scripts"
     plugin = Path.home() / "plugins/dsh"
     exe = repo / ".venv/Scripts/agentref.exe"
+    # Preview must not run helpers/hosts, inspect their configuration, or write
+    # anything. Existing installation dependencies are checked only on --apply.
+    if not args.apply:
+        print(json.dumps({"apply": False, "plugin": "dsh@personal", "target": str(plugin),
+                          "command": str(exe), "workspaceRoot": str(repo.parents[1]),
+                          "effects": ["write owned plugin files and branding", "update personal marketplace/cachebuster", "install plugin in Codex"],
+                          "restartHost": False, "rollbackSupported": False,
+                          "next": "Review these targets, then rerun with --apply only after authorizing installation."}, ensure_ascii=False))
+        return 0
     if not exe.is_file():
         raise SystemExit("Install AgentRef in .venv first")
 
@@ -51,7 +64,8 @@ def main():
     print(run(sys.executable, str(helpers / "validate_plugin.py"), str(plugin)))
     print(run(sys.executable, str(helpers / "update_plugin_cachebuster.py"), str(plugin)))
     print(run(shutil.which("codex"), "plugin", "add", "dsh@personal", "--json"))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

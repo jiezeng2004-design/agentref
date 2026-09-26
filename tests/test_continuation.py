@@ -7,7 +7,9 @@ from agentref.adapters.base import BaseAdapter
 from agentref.core import SessionIR
 from agentref.context_render import CONTEXT_LIMIT, bounded_json
 from agentref.evidence import command_history, file_history, continuation_candidates
-from agentref.handoff import build_context, reconcile
+from agentref.handoff import build_context, reconcile, recent_decisions
+from scripts.check_context_render import check as check_context_render
+from scripts.check_evidence_history import check as check_evidence_history
 import test_stability
 
 
@@ -35,6 +37,21 @@ class EvidenceTests(unittest.TestCase):
                                    for status in ("FAILED", "COMPLETED", "FAILED")])
         self.assertEqual(history[0]["supersededBy"], 1)
         self.assertNotIn("supersededBy", history[-1])
+
+    def test_readonly_history_view_preserves_input_and_copies_annotations(self):
+        items = [
+            {"task": "pytest", "cwd": "/project", "status": "FAILED", "evidence": ["failure"]},
+            {"task": "pytest", "cwd": "/project", "status": "COMPLETED", "evidence": ["success"]},
+            {"task": "lint", "cwd": "/project", "status": "UNCERTAIN", "evidence": ["pending"]},
+        ]
+        before = [dict(item, evidence=list(item["evidence"])) for item in items]
+        view = command_history(items, copy_evidence=False)
+        self.assertEqual(items, before)
+        self.assertEqual(view[0]["supersededBy"], 1)
+        self.assertIsNot(view[0]["evidence"], items[0]["evidence"])
+        self.assertIs(view[2]["evidence"], items[2]["evidence"])
+        isolated = command_history(items)
+        self.assertIsNot(isolated[2]["evidence"], items[2]["evidence"])
 
     def test_only_successful_full_write_supersedes_file_history(self):
         original = {"task": "Write", "path": "a.py", "cwd": "/project", "status": "COMPLETED", "expectedSha256": "old", "evidence": []}
@@ -86,6 +103,21 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["candidates"][0], "finish rollback")
         self.assertEqual(result["omittedCandidates"], 89)
 
+    def test_candidate_top_k_matches_full_sort_for_duplicate_tasks_and_statuses(self):
+        work = [{"task": f"task-{i % 73}", "status": ("NOT_STARTED", "PARTIAL", "FAILED", "UNCERTAIN")[i % 4],
+                 **({"supersededBy": i + 1} if i % 11 == 0 else {}),
+                 **({"planStatus": "completed"} if i % 17 == 0 else {})}
+                for i in range(1000)]
+        candidates = [item for item in work if item["status"] != "COMPLETED"
+                      and "supersededBy" not in item and item.get("planStatus") != "completed"]
+        priorities = {"NOT_STARTED": 0, "PARTIAL": 1, "FAILED": 2, "UNCERTAIN": 3}
+        ordered = sorted(enumerate(candidates), key=lambda pair: (priorities[pair[1]["status"]], -pair[0]))
+        expected = list(dict.fromkeys(item["task"] for _, item in ordered))
+        result = continuation_candidates(work, limit=12)
+        self.assertEqual(result["candidates"], expected[:12])
+        self.assertEqual(result["omittedCandidates"], max(0, len(expected) - 12))
+        self.assertEqual(continuation_candidates(iter(work), limit=12), result)
+
     def test_large_context_keeps_current_goal_latest_evidence_and_budget(self):
         session = SessionIR("codex", originalGoal="GOAL_START" + "g" * 20000 + "GOAL_END",
                             latestUserRequest="LATEST_START" + "u" * 20000 + "LATEST_END")
@@ -98,12 +130,42 @@ class EvidenceTests(unittest.TestCase):
         self.assertLessEqual(len(context), CONTEXT_LIMIT)
         self.assertLess(context.index("Recommended Continuation Point"), context.index("Commands Executed"))
 
+    def test_recent_decisions_keeps_only_latest_eight_in_order(self):
+        messages = [{"role": "assistant", "text": f"We decided option-{index}\r\nNo note"} for index in range(10000)]
+        messages.insert(25, {"role": "user", "text": "This was chosen by user text"})
+        decisions = recent_decisions(messages)
+        self.assertEqual([item["claim"] for item in decisions],
+                         [f"We decided option-{index}" for index in range(9992, 10000)])
+        long_text = "ordinary\n" * 40000 + "We decided on the final path"
+        self.assertEqual(recent_decisions([{"role": "assistant", "text": long_text}])[-1]["claim"],
+                         "We decided on the final path")
+
     def test_json_budget_preserves_latest_entries_and_reports_omissions(self):
         rendered = bounded_json([{"task": f"task-{i}"} for i in range(100)], 500)
         value = json.loads(rendered)
         self.assertGreater(value["omittedOlderEntries"], 0)
         self.assertEqual(value["items"][-1]["task"], "task-99")
         self.assertLessEqual(len(rendered), 500)
+
+    def test_json_budget_keeps_small_output_identical_and_bounds_large_newest_entry(self):
+        small = [{"task": "old"}, {"task": "new", "detail": [1, 2]}]
+        self.assertEqual(bounded_json(small, 2048), json.dumps(small, ensure_ascii=False, indent=2))
+        rendered = bounded_json([{"task": "x" * 1_000_000}], 512)
+        value = json.loads(rendered)
+        self.assertLessEqual(len(rendered), 512)
+        self.assertEqual(value["omittedOlderEntries"], 0)
+        self.assertIn("TRUNCATED", value["items"][0]["excerpt"])
+
+    def test_context_render_benchmark_matches_reference_shape(self):
+        result = check_context_render(rows=100, limit=500, repeats=1)
+        self.assertTrue(result["synthetic"])
+        self.assertTrue(result["equivalent"])
+        self.assertTrue(result["recentDecisions"]["equivalent"])
+
+    def test_evidence_top_k_benchmark_matches_full_sort(self):
+        result = check_evidence_history(records=100, unique_tasks=17, repeats=1, limit=5)
+        self.assertTrue(result["synthetic"])
+        self.assertTrue(result["equivalent"])
 
     def test_impossible_json_budget_fails_without_retry_loop(self):
         with self.assertRaises(ValueError):
@@ -174,7 +236,7 @@ class IndexDiagnosticsTests(unittest.TestCase):
         with patch.object(self.server, "rows", return_value=rows[-1:]) as search:
             result = self.server.mention_items({"query": "Session 119"})
         search.assert_called_once_with(query="Session 119")
-        self.assertEqual(result["items"][0]["title"], "Session 119")
+        self.assertTrue(result["items"][0]["title"].startswith("Session 119 · "))
 
 
 if __name__ == "__main__":

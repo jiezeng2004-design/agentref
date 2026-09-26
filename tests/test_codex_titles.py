@@ -38,6 +38,8 @@ class CodexTitleTests(unittest.TestCase):
                     stream.write(json.dumps({"id": "test-id", "thread_name": "新的会话名称"}) + "\n")
                 self.assertEqual(index.refresh()["changed"], 0)
                 self.assertEqual(index.sessions()[0]["title"], "新的会话名称")
+                self.assertEqual(index.matches("新的会话名称", limit=1)[0]["title"], "新的会话名称")
+                self.assertEqual(index.matches("登录功能验收", limit=1), [])
                 self.assertEqual(index.sessions()[0]["ref"], row["ref"])
                 self.assertEqual(source.read_bytes(), original)
             finally:

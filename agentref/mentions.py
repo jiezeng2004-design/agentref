@@ -49,7 +49,10 @@ def label(row, rank=None):
         identity = row.get("ref") or agent + ":" + str(row.get("sessionId") or "")
         suffix = sha256(identity.encode("utf-8")).hexdigest()[:8]
         return f"{project} · {stamp} · {suffix}"
-    return short_text(row["title"])
+    title = short_text(row["title"])
+    when = session_time(row)
+    stamp = when.astimezone().strftime("%m-%d %H:%M") if when.timestamp() else "时间未知"
+    return f"{title} · {stamp}" if when.timestamp() else title
 
 
 def resource_uri(row, rank=None):

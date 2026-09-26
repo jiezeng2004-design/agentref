@@ -51,7 +51,10 @@ def check(rows=12000, repeats=5):
                 count = [0]
 
                 def counted_row(cursor, values):
-                    count[0] += 1
+                    # Count materialized session rows, not scalar EXISTS/COUNT
+                    # results used for exact-match and pagination metadata.
+                    if any(column[0] == "ref" for column in cursor.description):
+                        count[0] += 1
                     return sqlite3.Row(cursor, values)
 
                 index.db.row_factory = counted_row
@@ -73,6 +76,116 @@ def check(rows=12000, repeats=5):
                 report.append({"scenario": scenario, "returned": len(results["current"]),
                                "materializedRows": materialized,
                                "medianMs": {key: round(statistics.median(value), 2) for key, value in timings.items()}})
+            index.adapters = adapters
+            offset, limit = 100, 50
+            count = [0]
+            index.db.row_factory = counted_row
+            timings = {"reference": [], "current": []}
+            materialized = {}
+            for iteration in range(repeats + 1):
+                results = {}
+                order = ("reference", "current") if iteration % 2 else ("current", "reference")
+                for mode in order:
+                    count[0] = 0
+                    started = time.perf_counter()
+                    if mode == "reference":
+                        results[mode] = full_table_reference(index, None)[offset:offset + limit]
+                    else:
+                        results[mode] = index.sessions(limit=limit, offset=offset)
+                    if iteration:
+                        timings[mode].append((time.perf_counter() - started) * 1000)
+                    materialized[mode] = count[0]
+                if results["reference"] != results["current"]:
+                    raise AssertionError("Pagination semantics changed")
+            report.append({"scenario": "all-sources-page", "offset": offset, "limit": limit,
+                           "returned": len(results["current"]), "materializedRows": materialized,
+                           "medianMs": {key: round(statistics.median(value), 2) for key, value in timings.items()}})
+            query_offset, query_limit, query = 100, 50, "Synthetic title"
+            count = [0]
+            index.db.row_factory = counted_row
+            timings = {"reference": [], "current": []}
+            materialized = {}
+            for iteration in range(repeats + 1):
+                results = {}
+                order = ("reference", "current") if iteration % 2 else ("current", "reference")
+                for mode in order:
+                    count[0] = 0
+                    started = time.perf_counter()
+                    if mode == "reference":
+                        full = full_table_reference(index, None)
+                        matched = [row for row in full if query.casefold() in row["title"].casefold()
+                                   or query.casefold() in Path(row["cwd"]).name.casefold()
+                                   or row["sessionId"].casefold().startswith(query.casefold())]
+                        results[mode] = matched[query_offset:query_offset + query_limit]
+                    else:
+                        results[mode] = index.matches(query, limit=query_limit, offset=query_offset)
+                    if iteration:
+                        timings[mode].append((time.perf_counter() - started) * 1000)
+                    materialized[mode] = count[0]
+                if results["reference"] != results["current"]:
+                    raise AssertionError("Keyword pagination semantics changed")
+            report.append({"scenario": "all-sources-keyword-page", "query": query,
+                           "offset": query_offset, "limit": query_limit,
+                           "returned": len(results["current"]), "materializedRows": materialized,
+                           "medianMs": {key: round(statistics.median(value), 2) for key, value in timings.items()}})
+            query_offset, query_limit, query = 0, 50, "no-such-match"
+            count = [0]
+            index.db.row_factory = counted_row
+            timings = {"reference": [], "current": []}
+            materialized = {}
+            for iteration in range(repeats + 1):
+                results = {}
+                order = ("reference", "current") if iteration % 2 else ("current", "reference")
+                for mode in order:
+                    count[0] = 0
+                    started = time.perf_counter()
+                    if mode == "reference":
+                        full = full_table_reference(index, None)
+                        matched = [row for row in full if query.casefold() in row["title"].casefold()
+                                   or query.casefold() in Path(row["cwd"]).name.casefold()
+                                   or row["sessionId"].casefold().startswith(query.casefold())]
+                        results[mode] = matched[query_offset:query_offset + query_limit]
+                    else:
+                        results[mode] = index.matches(query, limit=query_limit, offset=query_offset)
+                    if iteration:
+                        timings[mode].append((time.perf_counter() - started) * 1000)
+                    materialized[mode] = count[0]
+                if results["reference"] != results["current"]:
+                    raise AssertionError("Empty keyword pagination semantics changed")
+            report.append({"scenario": "all-sources-keyword-no-match", "query": query,
+                           "offset": query_offset, "limit": query_limit,
+                           "returned": len(results["current"]), "materializedRows": materialized,
+                           "medianMs": {key: round(statistics.median(value), 2) for key, value in timings.items()}})
+            query_offset, query_limit, query = 100, 50, "Synthetic title"
+            count = [0]
+            index.db.row_factory = counted_row
+            timings = {"reference": [], "current": []}
+            materialized = {}
+            for iteration in range(repeats + 1):
+                results = {}
+                order = ("reference", "current") if iteration % 2 else ("current", "reference")
+                for mode in order:
+                    count[0] = 0
+                    started = time.perf_counter()
+                    if mode == "reference":
+                        full = full_table_reference(index, None)
+                        matched = [row for row in full if query.casefold() in row["title"].casefold()
+                                   or query.casefold() in Path(row["cwd"]).name.casefold()
+                                   or row["sessionId"].casefold().startswith(query.casefold())]
+                        results[mode] = (matched[query_offset:query_offset + query_limit], len(matched))
+                    else:
+                        results[mode] = index.matches(query, limit=query_limit, offset=query_offset,
+                                                      include_total=True)
+                    if iteration:
+                        timings[mode].append((time.perf_counter() - started) * 1000)
+                    materialized[mode] = count[0]
+                if results["reference"] != results["current"]:
+                    raise AssertionError("Counted keyword pagination semantics changed")
+            report.append({"scenario": "all-sources-keyword-page-total", "query": query,
+                           "offset": query_offset, "limit": query_limit,
+                           "returned": len(results["current"][0]), "total": results["current"][1],
+                           "materializedRows": materialized,
+                           "medianMs": {key: round(statistics.median(value), 2) for key, value in timings.items()}})
             return {"synthetic": True, "sourceRefreshMeasured": False, "rows": rows, "repeats": repeats,
                     "resultsEquivalent": True, "scenarios": report}
         finally:

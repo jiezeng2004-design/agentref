@@ -1,6 +1,7 @@
 # Verification — 2026-09-05
 
-> Latest local prerelease checks: [2026-09-11 release readiness](RELEASE_READINESS.md).
+> Current evidence and open gates: [acceptance matrix](docs/CURRENT_ACCEPTANCE.md).
+> Published alpha.2 checks: [release readiness](RELEASE_READINESS.md).
 > The dated sections below retain historical evidence and limitations.
 
 **Status: working local alpha; v0.1 real cross-agent acceptance NOT passed.**

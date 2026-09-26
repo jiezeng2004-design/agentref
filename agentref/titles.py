@@ -44,8 +44,11 @@ def load_cache(home, strict=False):
         return {}
 
 
-def apply_cached_titles(home, rows):
-    cache = load_cache(home)
+def apply_cached_titles(home, rows, cache=None):
+    if cache is None:
+        cache = load_cache(home)
+    if not cache:
+        return
     for row in rows:
         record = cache.get(row["ref"])
         if (is_unnamed(row) and isinstance(record, dict) and record.get("identity") == identity(row)
@@ -98,19 +101,32 @@ def user_texts(adapter, row):
             raise ValueError("identity mismatch")
         with adapter.database(source) as db:
             meta = db.execute("SELECT * FROM session WHERE id=? AND parent_id IS NULL", (sid,)).fetchone()
-            if meta is None or identity(vars(adapter.metadata(meta, Path(source)))) != identity(row):
+            current = vars(adapter.metadata(meta, Path(source))) if meta is not None else None
+            if current is None or identity(current) != identity(row):
                 raise ValueError("identity mismatch")
-            if not is_unnamed(vars(adapter.metadata(meta, Path(source)))):
+            if not is_unnamed(current):
                 return
             revert = json.loads(meta["revert"] or "{}") if "revert" in meta.keys() else {}
             cutoff = revert.get("messageID")
+            user_messages = []
             for msg in db.execute("SELECT id,substr(data,1,262144) AS data FROM message WHERE session_id=? ORDER BY time_created,id LIMIT 128", (sid,)):
                 if msg["id"] == cutoff:
                     break
                 if json.loads(msg["data"]).get("role") != "user":
                     continue
-                for part in db.execute("SELECT substr(data,1,262144) FROM part WHERE message_id=? AND session_id=? ORDER BY time_created,id LIMIT 8", (msg["id"], sid)):
-                    data = json.loads(part[0])
+                user_messages.append(msg["id"])
+            if user_messages:
+                part_queries = []
+                params = []
+                for order, message_id in enumerate(user_messages):
+                    part_queries.append("SELECT ? AS message_order,part_id,data,time_created FROM ("
+                                        "SELECT id AS part_id,substr(data,1,262144) AS data,time_created "
+                                        "FROM part WHERE message_id=? AND session_id=? "
+                                        "ORDER BY time_created,id LIMIT 8)")
+                    params.extend((order, message_id, sid))
+                sql = " UNION ALL ".join(part_queries) + " ORDER BY message_order,time_created,part_id"
+                for part in db.execute(sql, params):
+                    data = json.loads(part["data"])
                     if data.get("type") == "text" and not data.get("ignored") and not data.get("synthetic"):
                         yield data.get("text", "")
         return
