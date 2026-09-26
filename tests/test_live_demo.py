@@ -90,7 +90,10 @@ class LiveDemoTests(unittest.TestCase):
         self.assertEqual(report["stopReason"], "protected-file-changed")
 
     def test_monitor_interruption_cleans_up_the_owned_child(self):
-        with patch.object(live_demo.time, "sleep", side_effect=KeyboardInterrupt):
+        # Do not patch the shared time module: POSIX subprocess.wait() uses its
+        # sleep too, and cleanup must remain real after the monitor interruption.
+        with patch.object(live_demo, "time", wraps=live_demo.time) as clock:
+            clock.sleep.side_effect = KeyboardInterrupt
             report = self.run_child("import time; time.sleep(120)")
         self.assertEqual(report["harnessError"], "KeyboardInterrupt")
         self.assertTrue(report["interruptedByHarness"])

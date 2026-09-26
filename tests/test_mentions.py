@@ -396,7 +396,7 @@ class MentionTests(unittest.TestCase):
                     if path.parent.name == "codex" and path.name == "1.jsonl")
         self.index.refresh()
         aliases = self.index.mention_alias_inventory("codex")
-        row = next(item for item in self.index.sessions("codex") if item["sourcePath"] == str(path))
+        row = next(item for item in self.index.sessions("codex") if item["sourcePath"] == str(path.resolve()))
         path.write_text(path.read_text(encoding="utf-8").replace(
             r"\u767b\u5f55\u4fee\u590d 1", "Revised request 1"), encoding="utf-8")
         self.assertGreater(self.index.refresh()["changed"], 0)

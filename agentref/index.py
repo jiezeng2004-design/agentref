@@ -86,7 +86,10 @@ def _datetime_order_key(value):
 
 
 def _search_casefold(value):
-    return value.casefold() if isinstance(value, str) else ""
+    # Older SQLite trigram tokenizers stop at NUL. Only this temporary candidate
+    # document is normalized; exact matching still uses the original metadata.
+    # Queries containing NUL bypass FTS, so replacing it cannot lose a valid gram.
+    return value.casefold().replace("\x00", " ") if isinstance(value, str) else ""
 
 
 def _search_document_changed(old, values):

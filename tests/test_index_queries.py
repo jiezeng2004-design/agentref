@@ -9,6 +9,7 @@ from unittest.mock import patch
 from agentref.adapters.registry import ADAPTERS
 from agentref.index import (
     Index, _ISO_ORDER_CACHE, _ISO_ORDER_CACHE_SEEN, _iso_session_order_key, _path_name,
+    _search_casefold,
 )
 from agentref.mentions import session_time
 from scripts.check_jsonl_streaming import check as check_jsonl_streaming
@@ -35,7 +36,7 @@ class IndexQueryTests(unittest.TestCase):
             except sqlite3.OperationalError as exc:
                 self.skipTest("SQLite FTS5 trigram tokenizer unavailable: " + str(exc))
             db.executemany("INSERT INTO search(rowid,title) VALUES (?,?)",
-                           ((n + 1, text.casefold()) for n, text in enumerate(texts)))
+                           ((n + 1, _search_casefold(text)) for n, text in enumerate(texts)))
             checked = 0
             for rowid, text in enumerate(texts, 1):
                 folded = text.casefold()
@@ -406,6 +407,29 @@ class IndexQueryTests(unittest.TestCase):
             finally:
                 index.close()
 
+    def test_trigram_nul_documents_preserve_exact_search_semantics(self):
+        self.assertEqual(_search_casefold("before\x00NEEDLE"), "before needle")
+        with tempfile.TemporaryDirectory() as td, patch("agentref.index._SEARCH_FTS_MIN_ROWS", 0):
+            index = Index(Path(td), [ADAPTERS["claude"]([])])
+            try:
+                index.db.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("claude:0000000000000001", "claude", "session-1", "before\x00NEEDLE",
+                     "", "", "2026-01-01T00:00:00Z", "synthetic::nul", "unknown", 1, 0, 0, "", 0))
+                index.db.commit()
+                self.assertTrue(index._ensure_search_fts())
+                statements = []
+                index.db.set_trace_callback(statements.append)
+                rows, total = index.matches("needle", "claude", limit=5, include_total=True)
+                self.assertEqual((len(rows), total), (1, 1))
+                self.assertEqual(rows[0]["title"], "before\x00NEEDLE")
+                self.assertTrue(any("agentref_search MATCH" in sql for sql in statements))
+                self.assertEqual(index.matches("before needle", "claude", limit=5,
+                                               include_total=True), ([], 0))
+                self.assertEqual(index.matches("before\x00needle", "claude", limit=5,
+                                               include_total=True)[1], 1)
+            finally:
+                index.close()
+
     def test_activity_only_refresh_keeps_trigram_document_current(self):
         with tempfile.TemporaryDirectory() as td, patch("agentref.index._SEARCH_FTS_MIN_ROWS", 0):
             root = Path(td)
@@ -421,7 +445,7 @@ class IndexQueryTests(unittest.TestCase):
                 self.assertTrue(index._ensure_search_fts())
                 self.assertFalse(index._search_fts_dirty)
                 before = index.db.execute("SELECT rowid FROM sessions WHERE sourcePath=?",
-                                          (str(path),)).fetchone()[0]
+                                          (str(path.resolve()),)).fetchone()[0]
                 with path.open("a", encoding="utf-8") as stream:
                     stream.write('{"type":"assistant","timestamp":"2026-09-26T10:00:00Z",'
                                  '"message":{"role":"assistant","content":"another update"}}\n')
@@ -429,7 +453,7 @@ class IndexQueryTests(unittest.TestCase):
                 self.assertFalse(changed["errors"])
                 self.assertEqual(changed["changed"], 1)
                 after = index.db.execute("SELECT rowid FROM sessions WHERE sourcePath=?",
-                                         (str(path),)).fetchone()[0]
+                                         (str(path.resolve()),)).fetchone()[0]
                 self.assertNotEqual(before, after)
                 self.assertEqual(index.refresh()["changed"], 0)
                 self.assertTrue(index._search_fts_ready)

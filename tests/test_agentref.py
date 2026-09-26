@@ -356,8 +356,8 @@ class AgentRefTests(unittest.TestCase):
             pass
 
         adapter = ClaudeAdapter([self.sources])
-        self.assertEqual(adapter.discoverSessions(), [session])
-        self.assertEqual(adapter.discovered_metadata(session)[0], session.stat().st_mtime_ns)
+        self.assertEqual(adapter.discoverSessions(), [session.resolve()])
+        self.assertEqual(adapter.discovered_metadata(session.resolve())[0], session.stat().st_mtime_ns)
 
     def test_foreign_session_immutable(self):
         p, a = self.fixture()

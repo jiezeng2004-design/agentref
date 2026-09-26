@@ -197,7 +197,7 @@ class DshTests(unittest.TestCase):
                 result = index.refresh()
                 self.assertTrue(result["errors"])
                 self.assertEqual(len(index.sessions("dsh")), 1)
-                self.assertEqual(index.sessions("dsh")[0]["sourcePath"], str(self.path))
+                self.assertEqual(index.sessions("dsh")[0]["sourcePath"], str(self.path.resolve()))
             finally:
                 index.close()
 

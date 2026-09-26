@@ -6,6 +6,12 @@ GitHub prerelease only; publication status and final commit/asset evidence are
 recorded on the release page. No PyPI/npm publication or new native-host/model
 acceptance is implied by this version entry.
 
+- Cross-platform release CI exposed NUL truncation in older SQLite trigram
+  tokenizers. Normalize NUL only in temporary candidate documents and retain exact
+  original-text matching, including the non-FTS path for NUL queries. Regression
+  tests also use canonical temporary paths and isolate the live monitor's clock
+  mock from POSIX subprocess cleanup.
+
 - OpenCode TUI and the opt-in Antigravity menu now ask the local index for a
   bounded 51-row query page before showing at most 50 choices. A final sentinel
   reports that more matches exist; selecting one revalidates its exact ref.
