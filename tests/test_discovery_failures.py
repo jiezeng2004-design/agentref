@@ -15,7 +15,7 @@ class DiscoveryFailureTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.source = self.root / "source"
         self.nested = self.source / "nested"
         self.nested.mkdir(parents=True)
