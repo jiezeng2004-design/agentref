@@ -122,8 +122,8 @@ async function fetchSessions(agent, query, signal) {
   return { rows: body.sessions, incomplete: body.incomplete === true };
 }
 
-async function fetchContext(ref) {
-  const response = await fetch(`${API}/context?ref=${encodeURIComponent(ref)}`, { cache: 'no-store' });
+async function fetchContext(ref, signal) {
+  const response = await fetch(`${API}/context?ref=${encodeURIComponent(ref)}`, { cache: 'no-store', signal });
   const body = await response.json();
   if (!response.ok || body.ok !== true || typeof body.context !== 'string') throw new Error(body.error || '无法读取所选会话');
   return body.context;
@@ -276,7 +276,59 @@ function scan() {
   document.querySelectorAll(COMPOSERS).forEach(attach);
 }
 
-function apply() {
+function createNativeSource() {
+  const valid = (ref) => typeof ref === 'string' && ref.length <= 256
+    && /^(claude|codex|grok|opencode|antigravity|dsh):[a-zA-Z0-9_-]{8,128}$/.test(ref);
+  return {
+    trigger: '@', name: 'agentref', order: -10, showGroupTitle: false,
+    async candidates(_session, { query, signal }) {
+      const match = /^(claude|codex|grok|opencode|antigravity|dsh)(?::(.*))?$/i.exec(query);
+      if (!match) return AGENTS.filter(agent => agent.startsWith(query.toLowerCase())).map(agent => ({
+        name: agent, label: `${agentLabel(agent)} · AgentRef`, icon: 'session',
+        section: 'AgentRef · 本地会话', value: JSON.stringify({ kind: 'agent', agent }), drill: true
+      }));
+      const agent = match[1].toLowerCase();
+      const { rows, incomplete } = await fetchSessions(agent, match[2] || '', signal);
+      if (signal.aborted) return [];
+      const section = incomplete ? 'AgentRef · 索引可能不完整，候选可能缺失或过期' : 'AgentRef · 本地会话';
+      const candidates = rows.filter(row => row.agent === agent && valid(row.ref)).map(row => ({
+        name: row.ref, label: row.title, icon: 'session', description: `${row.cwd || '未知工作区'} · ${row.updatedAt || '未知时间'}`,
+        section, value: JSON.stringify({ kind: 'session', ref: row.ref, title: row.title })
+      }));
+      if (incomplete && !candidates.length) candidates.push({
+        name: `${agent}:incomplete`, label: '索引可能不完整；没有匹配项不代表来源中没有会话', section
+      });
+      return candidates;
+    },
+    onPick({ candidate }) {
+      if (!candidate.value) return undefined;
+      const value = JSON.parse(candidate.value);
+      if (value.kind === 'agent' && AGENTS.includes(value.agent)) return { text: `@${value.agent}:`, continue: true };
+      if (value.kind !== 'session' || !valid(value.ref) || typeof value.title !== 'string') return undefined;
+      return { insert: { source: 'agentref', ref: value.ref, label: `${agentLabel(value.ref.split(':')[0])} · ${value.title}`,
+        appearance: 'session', clipboardText: `@${value.ref}` } };
+    },
+    codec: {
+      clipboardText(ref) { if (!valid(ref)) throw new Error('Invalid AgentRef reference'); return `@${ref}`; },
+      async serialize(ref, signal) {
+        if (!valid(ref)) throw new Error('Invalid AgentRef reference');
+        signal.throwIfAborted();
+        const context = await fetchContext(ref, signal);
+        signal.throwIfAborted();
+        return envelope({ agent: ref.split(':')[0], context });
+      }
+    }
+  };
+}
+
+function apply(ctx) {
+  // DSH 0.2 owns the rich editor, stale-span checks and submit-time codec.
+  // A source registration avoids touching Lexical's private DOM/state.
+  if (ctx?.inputTriggers?.registerSource) return ctx.inputTriggers.registerSource(createNativeSource());
+  return applyLegacy();
+}
+
+function applyLegacy() {
   ensureStyle();
   scan();
   const observer = new MutationObserver(scan);
@@ -296,4 +348,4 @@ function apply() {
   };
 }
 
-module.exports = { apply };
+module.exports = { apply, inject: ['inputTriggers'], createNativeSource };

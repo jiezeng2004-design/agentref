@@ -1,7 +1,7 @@
 # AgentRef
 
-[Alpha.3 release](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.3)
-· [Previous alpha.2](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.2)
+[Alpha.4 release](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.4)
+· [Previous alpha.3](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.3)
 · [Original demo](https://github.com/jiezeng2004-design/agentref/releases/tag/v0.1.0-alpha.1)
 
 Download `AgentRef-Showcase.zip` from the original alpha.1 release, extract it and open `index.html`
@@ -78,14 +78,21 @@ The existing DSH Web plugin must be reloaded/restarted to pick up its rebuilt
 server and client. No automatic restart is performed.
 
 Discovery uses `$DSH_HOME` (default `~/.dsh`), specifically `sessions/*/*/session.jsonl`
-or `session.jsonl.zstd`, and identity-matched title projection caches. Use
+or formal `session.vN.jsonl` generations, optionally ending in `.zstd`, and
+identity-matched title projection caches. Use
 `--dsh-root <DSH home>` before the CLI subcommand for an explicit root.
 Listing reads headers and title metadata only; selected context reads the
-version-0 event stream and applies its message replacement operations.
+version-0, version-3 or version-4 event stream and applies its message replacement
+operations. DSH 0.1.5-rc.2 writes version 3; the adapted 0.2.0-rc.2 host writes
+version 4. Source-reader support is separate from the Web plugin's host API target.
 Subagents and recovery backups are excluded. Unknown versions, ambiguous
 log representations and corrupt streams are reported instead of repaired.
 Native Desktop rendering and real-model continuation remain separate
 acceptance gates from the synthetic tests and app-server checks.
+The [2026-10-09 real-host tests](docs/REAL_TESTS_2026-10-09.md) cover controlled
+Codex ↔ DSH model continuation and record the automation limits observed then.
+The user confirmed the remaining acceptance manually before alpha.4 publication;
+see the [current acceptance record](docs/CURRENT_ACCEPTANCE.md).
 
 - [Claude CLI / Desktop local Code tab](integrations/claude/README.md)
 - [OpenCode TUI: @agent → Tab → session dialog](integrations/opencode/agentref-tui/README.md)
@@ -186,3 +193,9 @@ Tests and deterministic demo use synthetic fixtures and temporary workspaces,
 never personal agent data. [Architecture](ARCHITECTURE.md),
 [format findings](SESSION_FORMAT_FINDINGS.md), [plan](IMPLEMENTATION_PLAN.md).
 MIT licensed. No cloud sync, orchestration, vector database or long-term memory.
+
+## Contributing
+
+欢迎大家体验 AgentRef！遇到问题或有新想法，欢迎提
+[Issue](https://github.com/jiezeng2004-design/agentref/issues) 或
+[PR](https://github.com/jiezeng2004-design/agentref/pulls)，一起把跨 Agent 会话接续做得更好。

@@ -79,8 +79,16 @@ def inspect_operation(root, operation):
 
 def recent_conversation(messages, limit=5000):
     """Keep every recent turn represented, including the end of long replies."""
-    recent = messages[-8:]
-    omitted = max(0, len(messages) - len(recent))
+    recent, scanned = [], 0
+    for message in reversed(messages):
+        scanned += 1
+        if message["role"] != "context":
+            recent.append(message)
+            if len(recent) == 8:
+                break
+    recent.reverse()
+    excluded = scanned - len(recent)
+    omitted = len(messages) - scanned
     text_limit = 500
     while True:
         items = []
@@ -90,7 +98,10 @@ def recent_conversation(messages, limit=5000):
                 half = text_limit // 2
                 text = text[:half] + "\n[TRUNCATED middle of message]\n" + text[-half:]
             items.append({"role": message["role"], "text": text})
-        value = json.dumps({"olderMessagesOmitted": omitted, "messages": items}, ensure_ascii=False, indent=2)
+        payload = {"olderMessagesOmitted": omitted, "messages": items}
+        if excluded:
+            payload["hostContextMessagesExcluded"] = excluded
+        value = json.dumps(payload, ensure_ascii=False, indent=2)
         if len(value) <= limit or not recent:
             return value
         if text_limit > 32:

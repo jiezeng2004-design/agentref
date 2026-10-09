@@ -1,7 +1,15 @@
 # dsh-agentref
 
 `dsh-agentref` adds local, read-only AgentRef session mentions to the DSH Web
-composer. Type one of the following in a fresh or existing DSH conversation:
+composer.
+
+The alpha.4 integration targets **DSH 0.2.0-rc.2** and registers an
+official `inputTriggers` source for its rich composer. Candidate browsing and
+chip insertion read metadata only; the host invokes the reference codec at
+submission to revalidate and read exactly the selected session. It is included
+in the AgentRef source release and remains a private package for local installation.
+
+Type one of the following in a fresh or existing DSH conversation:
 
 ```text
 @claude
@@ -12,12 +20,12 @@ composer. Type one of the following in a fresh or existing DSH conversation:
 @dsh
 ```
 
-Press Tab to open and focus the popup, use Up/Down to move, then Tab or Enter
-to choose a concrete session. Escape cancels. Mouse selection also works.
+Use the host's candidate menu to choose a concrete session, by keyboard or
+mouse. Escape cancels. The native host owns navigation and stale draft guards.
 Opening the popup or moving its highlight never reads a session body.
 The plugin never chooses a session
-automatically. The composer displays an `AgentRef 会话` marker; immediately
-before this message is sent, the plugin appends AgentRef's bounded continuation
+automatically. The rich composer displays a labeled session chip; immediately
+before this message is sent, its codec serializes AgentRef's bounded continuation
 context for exactly that selected session. The context is local historical
 evidence, not a command to replay.
 
@@ -25,8 +33,8 @@ Use `@claude:关键词` (substitute the source name) to filter titles, workspace
 paths, or reference prefixes. This first version targets the DSH `web` profile
 and uses its documented local web/client plugin architecture.
 
-Search waits for a 150 ms pause in typing. Esc, clicking outside, or submitting
-the message cancels pending search display; late responses cannot reopen it.
+The native host owns search cancellation, stale responses, draft revisions and
+submission. The retained textarea fallback uses a 150 ms pause in typing.
 Overlapping searches for the same source and query share an in-flight metadata
 request. Completed lists are not cached. The query and 50-row limit are passed
 to the CLI before JSON serialization; selecting a session revalidates its exact
@@ -57,9 +65,10 @@ never select a session automatically.
   and always require a loopback peer and Host. When an Origin header is present,
   its scheme, host and effective port must match the request. Origin-less local
   GET requests remain supported; this fallback is not client authentication.
-- Candidate browsing returns metadata only. Context is read only after a user
-  click or explicit keyboard selection and is kept in browser memory only until
-  the composer sends it.
+- Candidate browsing and native chip insertion return metadata only. Context
+  is read at submission for the explicitly selected chip, with cancellation;
+  an unavailable or changed source blocks serialization. The retained legacy
+  textarea fallback reads context after explicit selection.
 - No source session is resumed, modified, uploaded, or transmitted by this
   plugin itself. The ordinary DSH model submission remains governed by the
   user's DSH provider and data policy.

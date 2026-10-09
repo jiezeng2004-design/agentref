@@ -20,7 +20,7 @@ prefix as proof that a script cannot access installed-host metadata.
 | `scripts/check_wheel.py` | Temporary source copy, wheelhouse and venv; build may download dependencies; CLI/MCP use fixtures |
 | `scripts/continuation_trial.py` | `prepare` creates synthetic trial artifacts; `verify` executes bounded trial tests; handing off to a model is separate |
 | `scripts/check_dsh_mentions_browser.cjs` | Headless browser, loopback HTTP fixture server and screenshots under `output/`; not a live DSH host |
-| `scripts/check_dsh_native_format.mjs` | Imports a supplied installed DSH Session module and writes a synthetic compressed store to the supplied output root |
+| `scripts/check_dsh_native_format.mjs` | Imports a supplied installed DSH Session module; supports legacy v0 and the official v4 SessionHandle JSONL writer, including official read-back; writes synthetic compressed data only to the supplied output root |
 | `scripts/check_native_mentions.py` | Installed Codex app-server with an isolated synthetic home/source; writes local evidence; no model |
 
 ## Installed-host inspection / metadata

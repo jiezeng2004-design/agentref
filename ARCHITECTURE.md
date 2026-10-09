@@ -46,6 +46,14 @@ State: COMPLETED, PARTIAL, NOT_STARTED, FAILED, UNCERTAIN, each with evidence.
 COMPLETED applies to evidenced operations, not inferred product acceptance.
 Handoff includes provenance and treats all foreign text as untrusted data.
 
+Codex's observed host-injected user records are retained with role `context` in
+the Session IR. They do not replace the original goal, latest user intent or turn
+state. Known request wrappers expose the complete multiline request while raw
+message text remains available for provenance. Unknown markup remains user text;
+this is format recognition, not semantic intent inference. Recent conversation
+selects the last eight non-context messages, so host metadata cannot evict the
+actual exchange, and reports excluded host records within that selected span.
+
 Codex sideband `patch_apply_end` events are recognized only for the observed
 add-file shape. The adapter records historical success/failure, exact UTF-8
 content hashes and event provenance without interpreting opaque JavaScript.
@@ -87,9 +95,20 @@ Detected refresh failures propagate diagnostics to MCP callers; partial inventor
 never silently establishes a unique alias selection. Native search caps output
 at 100 candidates while filtering the full inventory. JSONL discovery failures
 retain cached entries for that adapter, as snapshot failures already do.
+Built-in JSONL discovery propagates directory and entry-stat failures rather than
+returning a partial inventory. Missing optional roots are still allowed. Stat
+hints are published only after a complete scan; a failed scan preserves the
+source's cached rows and disables implicit unique-query selection until retry.
 JSONL parse warnings survive cache hits. A changed warning-bearing source is
 reparsed from zero before clearing its diagnostic, preventing valid appends from
 masking earlier corrupt records.
+
+The MCP `sessions` tool uses bounded indexed pages (default 50, maximum 100),
+metadata query filtering and exact matching totals. Its first content item
+retains the session-array format; separate pagination metadata/text exposes older
+pages without reading a transcript. Integer bounds, query length and argument
+types are checked before refresh. Pages are refreshed independently, so displayed
+refs, rather than positions in a later page, remain selection identities.
 
 Foreign files are opened read-only. Index lives under AgentRef's own data home.
 MCP exposes only indexed identifiers, never an arbitrary file-read or execute tool.

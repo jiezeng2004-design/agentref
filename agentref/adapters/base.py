@@ -59,39 +59,40 @@ class BaseAdapter:
         return self.readSession(path)
 
     def discoverSessions(self):
+        # Publish stat hints only after a complete scan. A partial inventory must
+        # raise so Index retains this source's cached rows and reports its failure.
+        self._discovered_stats.clear()
         file_stats = {}
         for root in self.roots:
-            if not root.is_dir():
+            try:
+                root_stat = root.stat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(root_stat.st_mode):
                 continue
             pending = [root]
             while pending:
                 directory = pending.pop()
-                try:
-                    resolved = directory.resolve()
-                    if (not resolved.is_relative_to(root) or directory.is_symlink()
-                            or (hasattr(directory, "is_junction") and directory.is_junction())):
-                        continue
-                    with os.scandir(directory) as entries:
-                        for entry in entries:
-                            try:
-                                if entry.is_symlink():
-                                    continue
-                                if entry.is_dir(follow_symlinks=False):
-                                    path = Path(entry.path)
-                                    is_junction = getattr(path, "is_junction", None)
-                                    if is_junction is not None and is_junction():
-                                        continue
-                                    if entry.name != "subagents":
-                                        pending.append(path)
-                                elif (entry.name.casefold().endswith(".jsonl")
-                                      and not entry.name.startswith("agent-")):
-                                    source_stat = entry.stat(follow_symlinks=False)
-                                    if stat.S_ISREG(source_stat.st_mode):
-                                        file_stats[entry.path] = (source_stat.st_mtime_ns, source_stat.st_size)
-                            except OSError:
-                                continue
-                except OSError:
+                resolved = directory.resolve()
+                if (not resolved.is_relative_to(root) or directory.is_symlink()
+                        or (hasattr(directory, "is_junction") and directory.is_junction())):
                     continue
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            path = Path(entry.path)
+                            is_junction = getattr(path, "is_junction", None)
+                            if is_junction is not None and is_junction():
+                                continue
+                            if entry.name != "subagents":
+                                pending.append(path)
+                        elif (entry.name.casefold().endswith(".jsonl")
+                              and not entry.name.startswith("agent-")):
+                            source_stat = entry.stat(follow_symlinks=False)
+                            if stat.S_ISREG(source_stat.st_mode):
+                                file_stats[entry.path] = (source_stat.st_mtime_ns, source_stat.st_size)
         ordered_paths = sorted(file_stats, key=os.path.normcase)
         self._discovered_stats = file_stats
         return [Path(path) for path in ordered_paths]

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0-alpha.4 — 2026-10-09
+
+GitHub prerelease with source ZIP, Python wheel and SHA256 checksums. The release
+page records the final commit, exact-candidate CI and published assets.
+
+- Codex host metadata no longer replaces the original goal, latest user request
+  or turn state. Wrapped requests retain their full multiline intent and raw
+  provenance; handoff keeps the latest eight conversation messages.
+- Failed Claude/Codex discovery preserves cached sessions and reports an
+  incomplete index instead of treating inaccessible directories as empty.
+- MCP `sessions` now supports bounded metadata pagination, keyword queries and
+  totals without reading selected session bodies.
+- DSH reads version-3 and version-4 persistence alongside version 0, selects the
+  formal generation and requires reselection when it changes. Unknown future
+  generations and ambiguous encodings fail closed without migrating sources.
+- The DSH Web integration uses the official 0.2.0-rc.2 input source API and reads
+  selected context at submit. Cancellation, removal and unavailable sources
+  preserve the draft.
+- Added regression coverage and dated real-host/model evidence. Controlled
+  Codex ↔ DSH model continuation, DSH Web and OpenCode TUI checks passed; the
+  remaining acceptance was confirmed manually by the user before publication.
+
 ## 0.1.0-alpha.3 — 2026-09-26
 
 GitHub prerelease only; publication status and final commit/asset evidence are

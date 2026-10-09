@@ -1,8 +1,9 @@
-"""Read-only DSH version-0 JSONL/Zstandard history and title projections."""
+"""Read-only DSH version-0/3/4 JSONL/Zstandard history."""
 import json
 from bisect import bisect_left
 from contextlib import contextmanager
 import os
+import re
 from operator import itemgetter
 from pathlib import Path
 import stat
@@ -15,6 +16,8 @@ MAX_LINE = 16 * 1024 * 1024
 MAX_HISTORY = 128 * 1024 * 1024
 _PACKED_EVENT_TYPES = frozenset(("text-chunks", "reasoning-chunks", "tool-call-chunks"))
 _SURFACE_EVENT_TYPES = frozenset(("user/message", "assistant/message", "tool/result"))
+_MODERN_SURFACE_EVENT_TYPES = _SURFACE_EVENT_TYPES | {"system/message", "developer/message"}
+_GENERATION_NAME = re.compile(r"session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?\Z")
 _PASSIVE_EVENT_TYPES = frozenset(("turn/start", "turn/end", "step/start", "step/end", "tool/call",
                                  "assistant/chunk", "request/header", "request/context", "session/end-seed"))
 _JSON_DECODER = json.JSONDecoder()
@@ -81,8 +84,11 @@ class DshAdapter(SnapshotAdapter):
         if len(line) > 65536 or not line.endswith(b"\n"):
             raise ValueError("invalid DSH header")
         data = _loads_jsonl_record(line)
-        if not isinstance(data, dict) or data.get("type") != "session" or data.get("version") != 0 or not isinstance(data.get("id"), str) or not data["id"]:
+        if not isinstance(data, dict) or data.get("type") != "session" or type(data.get("version")) is not int or data["version"] not in (0, 3, 4) or not isinstance(data.get("id"), str) or not data["id"]:
             raise ValueError("unsupported DSH session format")
+        if data["version"] in (3, 4) and (type(data.get("isSeeded")) is not bool
+                or type(data.get("delegationDepth")) is not int or data["delegationDepth"] < 0):
+            raise ValueError("invalid DSH version-3/4 header")
         return data
 
     def metadata(self, path):
@@ -91,6 +97,9 @@ class DshAdapter(SnapshotAdapter):
     def _metadata_checked(self, path, cache_dir_present=None, root=None):
         with self._stream_checked(path) as stream:
             header = self.header(stream)
+        generation = _GENERATION_NAME.fullmatch(path.name)
+        if generation and int(generation[1] or 0) != header["version"]:
+            raise ValueError("DSH generation filename and header disagree")
         if header.get("origin") == "subagent" or header.get("delegationDepth", 0) > 0:
             return None
         s = SessionIR(agent=self.agent, sessionId=header["id"], title="未命名 DSH 会话",
@@ -183,12 +192,17 @@ class DshAdapter(SnapshotAdapter):
                     try:
                         with os.scandir(folder.path) as entries:
                             session_entries = {entry.name: entry for entry in entries
-                                               if entry.name in ("session.jsonl", "session.jsonl.zstd")}
+                                               if _GENERATION_NAME.fullmatch(entry.name)}
                     except OSError:
                         scan_error_path(folder_path, root)
                         continue
                     candidates = []
-                    for name in ("session.jsonl", "session.jsonl.zstd"):
+                    encodings = {bool(_GENERATION_NAME.fullmatch(name)[2]) for name in session_entries}
+                    latest = max((int(_GENERATION_NAME.fullmatch(name)[1] or 0)
+                                  for name in session_entries), default=-1)
+                    for name in sorted(session_entries):
+                        if int(_GENERATION_NAME.fullmatch(name)[1] or 0) != latest:
+                            continue
                         entry = session_entries.get(name)
                         if entry is None:
                             continue
@@ -202,9 +216,9 @@ class DshAdapter(SnapshotAdapter):
                             candidates.append((path, False))
                         elif stat.S_ISREG(info.st_mode):
                             candidates.append((path, True))
-                    if len(candidates) == 1:
+                    if len(candidates) == 1 and len(encodings) == 1:
                         add(candidates[0][0], root, trusted=candidates[0][1])
-                    elif len(candidates) > 1:
+                    elif len(candidates) > 1 or len(encodings) > 1:
                         # Do not guess which competing representation is authoritative.
                         add(folder_path / "ambiguous-session-format", root)
 
@@ -218,6 +232,15 @@ class DshAdapter(SnapshotAdapter):
         yield from self.scan_files(paths, read)
 
     def read_indexed(self, row):
+        path = self.checked(row["sourcePath"])
+        selected = _GENERATION_NAME.fullmatch(path.name)
+        if selected:
+            selected_version = int(selected[1] or 0)
+            for sibling in path.parent.iterdir():
+                generation = _GENERATION_NAME.fullmatch(sibling.name)
+                if generation and (int(generation[1] or 0) > selected_version
+                                   or bool(generation[2]) != bool(selected[2])):
+                    raise ValueError("DSH source generation changed; select the refreshed candidate")
         session = self.readSession(row["sourcePath"])
         if session.sessionId != row["sessionId"]:
             raise ValueError("DSH source identity changed; select the refreshed candidate")
@@ -241,7 +264,9 @@ class DshAdapter(SnapshotAdapter):
         final_state = None
         event_errors = []
         with self._stream_checked(path) as stream:
-            self.header(stream)
+            header = self.header(stream)
+            modern = header["version"] in (3, 4)
+            surface_types = _MODERN_SURFACE_EVENT_TYPES if modern else _SURFACE_EVENT_TYPES
             while line := stream.readline(MAX_LINE + 1):
                 size += len(line)
                 if len(line) > MAX_LINE or size > MAX_HISTORY:
@@ -257,6 +282,8 @@ class DshAdapter(SnapshotAdapter):
                     raise ValueError("invalid DSH event envelope")
                 kind = event.get("type")
                 if kind in _PACKED_EVENT_TYPES:
+                    if modern:
+                        raise ValueError("DSH version-3/4 streams must be embedded in assistant events")
                     chunks = data.get("args" if kind == "tool-call-chunks" else "texts")
                     if event.get("seq0") != expected or not isinstance(chunks, list) or not chunks or not all(isinstance(c, str) for c in chunks):
                         raise ValueError("invalid DSH packed sequence")
@@ -265,7 +292,7 @@ class DshAdapter(SnapshotAdapter):
                         raise ValueError("invalid DSH packed timestamps")
                     expected += len(chunks)
                     continue  # Assembled assistant/message owns visible content.
-                if event.get("seq") != expected:
+                if type(event.get("seq")) is not int or event["seq"] != expected:
                     raise ValueError("DSH event sequence gap")
                 expected += 1
                 if kind == "tool/call":
@@ -278,14 +305,14 @@ class DshAdapter(SnapshotAdapter):
                     if reason.get("kind") == "error":
                         event_errors.append(json.dumps(reason.get("error"), ensure_ascii=False))
                 op = event.get("surfaceOp")
-                if op is not None and kind not in _SURFACE_EVENT_TYPES:
+                if op is not None and kind not in surface_types:
                     raise ValueError("unsupported DSH surface event")
                 if op == "append":
                     surface.append((event["seq"], kind, data))
                     if len(surface) > 1 and surface_ordered and surface[-2][0] >= surface[-1][0]:
                         surface_ordered = False
                 elif isinstance(op, dict) and op.get("op") == "replace":
-                    start_value, end_value = op["start"], op["end"]
+                    start_value, end_value = (op["startSeq"], op["endSeq"]) if modern else (op["start"], op["end"])
                     if surface_ordered and type(start_value) is int and type(end_value) is int:
                         start = bisect_left(surface, start_value, key=_SURFACE_SEQUENCE)
                         end = bisect_left(surface, end_value, key=_SURFACE_SEQUENCE)
@@ -297,15 +324,22 @@ class DshAdapter(SnapshotAdapter):
                         start, end = seqs.index(start_value), seqs.index(end_value)
                     if start > end:
                         raise ValueError("invalid DSH surface replacement")
+                    if modern:
+                        sources = event.get("sourceEventSeqs")
+                        if (not isinstance(sources, list) or not sources
+                                or any(type(seq) is not int or seq < 0 or seq >= event["seq"] for seq in sources)
+                                or len(set(sources)) != len(sources)
+                                or any(node[0] not in sources for node in surface[start:end + 1])):
+                            raise ValueError("invalid DSH replacement source references")
                     ends_at_tail = end == len(surface) - 1
                     surface[start:end + 1] = [(event["seq"], kind, data)]
                     if not ends_at_tail:
                         surface_ordered = False
-                    replaced_until = max(replaced_until, op["end"])
+                    replaced_until = max(replaced_until, end_value)
                     s.parseWarnings.append("DSH compacted surface used; replaced messages excluded")
                 elif op is not None:
                     raise ValueError("unsupported DSH surface operation")
-                elif kind in _SURFACE_EVENT_TYPES:
+                elif kind in surface_types:
                     raise ValueError("DSH message lacks supported surface metadata")
                 elif kind not in _PASSIVE_EVENT_TYPES:
                     self.unknown(s, kind)
@@ -324,6 +358,18 @@ class DshAdapter(SnapshotAdapter):
                         self.call(s, b["id"], b["name"], b["arguments"])
                         added_calls.add(b["id"])
             elif kind == "tool/result":
+                if header["version"] == 4:
+                    message = d["message"]
+                    cid = message["toolCallId"]
+                    call_data = calls.get(cid)
+                    if call_data is None:
+                        s.parseWarnings.append("DSH result has no matching historical tool call")
+                    else:
+                        if cid not in added_calls:
+                            self.call(s, cid, call_data[1], call_data[2])
+                            added_calls.add(cid)
+                        self.result(s, cid, message.get("content", []), bool(message.get("isError") or d.get("error")))
+                    continue
                 for block in d.get("message", {}).get("content", []):
                     cid = block.get("callId", block.get("toolCallId", block.get("id")))
                     call_data = calls.get(cid)
@@ -334,6 +380,8 @@ class DshAdapter(SnapshotAdapter):
                         self.result(s, cid, block.get("content", block.get("result", "")), bool(d.get("error") or block.get("isError")))
                     else:
                         s.parseWarnings.append("DSH result has no matching historical tool call")
+            elif kind == "developer/message":
+                self.message(s, "assistant", "[Historical developer context]\n" + text_content(d.get("message", {}).get("content")))
         # A crash may persist tool/call before its assembled assistant message.
         # Keep such pending calls, except evidence shadowed by compaction.
         for cid, (call_seq, call_name, call_arguments) in calls.items():

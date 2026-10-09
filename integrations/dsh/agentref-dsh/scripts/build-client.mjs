@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,5 +17,4 @@ const output = [
 await mkdir(join(root, 'lib'), { recursive: true });
 await writeFile(join(root, 'lib', 'client.js'), output);
 await writeFile(join(root, 'lib', 'index.js'), host);
-await rm(join(root, '.client-build'), { recursive: true, force: true });
 console.log(`built lib/client.js (${output.length} bytes)`);

@@ -1,16 +1,37 @@
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from .base import BaseAdapter, text_content
 
 
+_REQUEST_WRAPPERS = ("# AGENTS.md instructions", "# Files mentioned", "## Referenced chats")
+_HOST_CONTEXT_PREFIXES = (
+    "<environment_context>", "<recommended_plugins>", "<external_codex_apps_open_page>",
+    "<permissions instructions>", "<skills_instructions>", "<collaboration_mode>",
+)
+_REQUEST_HEADING = re.compile(r"^## My request:[ \t]*(?:\r?\n|$)", re.M)
+
+
+def request_text(text):
+    """Separate observed host wrappers from full user intent; keep raw evidence."""
+    stripped = text.strip()
+    if stripped.startswith((*_REQUEST_WRAPPERS, "## My request:")):
+        heading = _REQUEST_HEADING.search(stripped)
+        if heading:
+            return stripped[heading.end():].strip()
+        return ""
+    if stripped.startswith(_HOST_CONTEXT_PREFIXES):
+        return ""
+    # Unknown markup and headings can be real requests. Do not infer their role.
+    return text if stripped else ""
+
+
 def request_title(text):
     """Ignore host-injected user messages when deriving a fallback title."""
-    if "## My request:" in text:
-        text = text.rsplit("## My request:", 1)[1]
-    text = text.strip()
-    if not text or text.startswith(("<", "# AGENTS.md", "# Files", "## Referenced chats", "You are ", "This is an authorized interrupted")):
+    text = request_text(text).strip()
+    if not text or text.startswith(("<", "# AGENTS.md", "# Files", "You are ", "This is an authorized interrupted")):
         return ""
     return text.splitlines()[0][:120]
 
@@ -191,9 +212,18 @@ class CodexAdapter(BaseAdapter):
 
     def message(self, s, role, text):
         old_title = s.title
-        super().message(s, role, text)
         if role == "user":
+            request = request_text(text)
+            if not request:
+                # Retain provenance without replacing intent or resetting a
+                # completed/interrupted turn because the host appended metadata.
+                super().message(s, "context", text)
+                return
+            super().message(s, role, request)
+            s.messages[-1]["text"] = text
             s.title = old_title if old_title and old_title != s.sessionId else request_title(text)
+        else:
+            super().message(s, role, text)
 
     def consume(self, s, r):
         kind = r.get("type")

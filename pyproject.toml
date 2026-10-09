@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentref"
-version = "0.1.0a3"
+version = "0.1.0a4"
 description = "Reference sessions across AI coding agents."
 requires-python = ">=3.11"
 license = "MIT"
