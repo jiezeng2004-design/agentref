@@ -148,7 +148,7 @@ class CodexPatchEventTests(unittest.TestCase):
             self.assertEqual(index.refresh()["changed"], 1)
             self.assertFalse(index.refresh()["errors"])
             self.assertEqual(index.refresh()["changed"], 0)
-            self.assertEqual(index.db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(index.db.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(self.path.read_bytes(), before)
         finally:
             index.close()
@@ -160,7 +160,7 @@ class CodexPatchEventTests(unittest.TestCase):
         with index.db:
             row = index.db.execute("SELECT * FROM sessions").fetchone()
             values = list(row)
-            values[0], values[1], values[7], values[13] = "claude:synthetic", "claude", "synthetic-foreign-path", 1
+            values[0], values[1], values[7], values[13] = "grok:synthetic", "grok", "synthetic-foreign-path", 1
             index.db.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
             index.db.execute("PRAGMA user_version=1")
         before = [tuple(r) for r in index.db.execute("SELECT * FROM sessions ORDER BY ref")]
@@ -169,7 +169,7 @@ class CodexPatchEventTests(unittest.TestCase):
         try:
             self.assertEqual([tuple(r) for r in index.db.execute("SELECT * FROM sessions ORDER BY ref")], before)
             self.assertEqual(index.refresh()["changed"], 0)
-            self.assertIsNotNone(index.db.execute("SELECT 1 FROM sessions WHERE agent='claude'").fetchone())
+            self.assertIsNotNone(index.db.execute("SELECT 1 FROM sessions WHERE agent='grok'").fetchone())
         finally:
             index.close()
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Claude titles follow the latest `custom-title`, then the latest `ai-title`,
+  then the first real user request. Whole host-injected blocks such as
+  `<system-reminder>` no longer become the title, original goal or latest intent;
+  raw message text is retained.
+- Claude sideband records (`agent-name`, `api-request*`, `tools-used`, `pr-link`,
+  `relocated`, `bridge-session`) no longer produce parse warnings.
+- Index schema version 6 stores Claude title provenance separately from session
+  rows, so changed Claude files keep appended-bytes refresh without losing title
+  precedence. Older Claude cache rows are rebuilt once.
+
 ## 0.1.0-alpha.4 — 2026-10-09
 
 GitHub prerelease with source ZIP, Python wheel and SHA256 checksums. The release
