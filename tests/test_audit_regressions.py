@@ -152,7 +152,7 @@ class AuditRegressionTests(unittest.TestCase):
             stream.write('{"type":"user","message":{"content":"Appended"}}\n')
         index = self.index('claude')
         self.assertTrue(index.refresh()['errors'])
-        self.assertEqual(index.db.execute('PRAGMA user_version').fetchone()[0], 4)
+        self.assertEqual(index.db.execute('PRAGMA user_version').fetchone()[0], 6)
 
     def test_known_tool_records_do_not_create_false_metadata_warnings(self):
         for agent in ('claude', 'codex'):

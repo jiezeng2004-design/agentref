@@ -217,6 +217,21 @@ class Index:
                 self.db.execute("PRAGMA user_version=4")
         else:
             self.db.execute("CREATE INDEX IF NOT EXISTS sessions_sessionid ON sessions(sessionId)")
+        if self.db.execute("PRAGMA user_version").fetchone()[0] < 5:
+            # Rebuild Claude title precedence, host-filtered fallbacks and known
+            # record diagnostics once, including unchanged source files.
+            with self.db:
+                self.db.execute("UPDATE sessions SET mtime=-1 WHERE agent='claude'")
+                self.db.execute("PRAGMA user_version=5")
+        if self.db.execute("PRAGMA user_version").fetchone()[0] < 6:
+            # Keep the sessions row/query contract unchanged. Only provenance,
+            # never transcript text, is needed to resume Claude title selection.
+            with self.db:
+                self.db.execute("""CREATE TABLE IF NOT EXISTS claude_title_sources (
+                    sourcePath TEXT PRIMARY KEY,
+                    titleSource TEXT CHECK(titleSource IN ('custom','ai','derived')))""")
+                self.db.execute("UPDATE sessions SET mtime=-1 WHERE agent='claude'")
+                self.db.execute("PRAGMA user_version=6")
 
     def close(self):
         self.db.close()
@@ -985,13 +1000,16 @@ class Index:
                 continue
             existing = {row["sourcePath"]: row for row in self.db.execute(
                 "SELECT * FROM sessions WHERE agent=?", (agent,))}
+            title_sources = (dict(self.db.execute("SELECT sourcePath,titleSource FROM claude_title_sources"))
+                             if agent == "claude" else {})
             for path in paths:
                 seen.add(str(path))
                 stats["files"] += 1
                 try:
                     mtime_ns, size = adapter.discovered_metadata(path)
                     old = existing.get(str(path))
-                    repair_title = old and adapter.metadata_needs_refresh(old)
+                    repair_title = old and (adapter.metadata_needs_refresh(old)
+                                           or (agent == "claude" and str(path) not in title_sources))
                     if old and not repair_title and old["mtime"] == mtime_ns and old["size"] == size:
                         if old["warnings"]:
                             stats["errors"].append(agent + ": cached source metadata has parse warnings")
@@ -1004,6 +1022,8 @@ class Index:
                         for key in ("sessionId", "title", "cwd", "createdAt", "updatedAt", "latestAgentState"):
                             setattr(s, key, old[key])
                         s._metadata_seen = True
+                        if agent == "claude":
+                            s._claudeTitleSource = title_sources[str(path)]
                     warning_count = 0
                     incomplete_tail = False
 
@@ -1066,6 +1086,9 @@ class Index:
                         search_document_changed = True
                         self._mark_search_fts_dirty()
                     self.db.execute("INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
+                    if agent == "claude":
+                        self.db.execute("INSERT OR REPLACE INTO claude_title_sources VALUES (?,?)",
+                                        (str(path), getattr(s, "_claudeTitleSource", None)))
                     stats["changed"] += 1
                     stats["bytesRead"] += end - offset
                 except OSError as exc:
@@ -1084,6 +1107,7 @@ class Index:
                 search_document_changed = True
                 self._mark_search_fts_dirty()
                 self.db.executemany("DELETE FROM sessions WHERE sourcePath=?", stale)
+                self.db.executemany("DELETE FROM claude_title_sources WHERE sourcePath=?", stale)
         else:
             stale = []
         self.db.commit()

@@ -571,7 +571,7 @@ class IndexQueryTests(unittest.TestCase):
                     ("claude", "codex", "synthetic"),
                 ).fetchall()
                 self.assertIn("sessions_sessionid", " ".join(row[3] for row in id_plan))
-                self.assertEqual(index.db.execute("PRAGMA user_version").fetchone()[0], 4)
+                self.assertEqual(index.db.execute("PRAGMA user_version").fetchone()[0], 6)
                 index.db.execute("DROP INDEX sessions_sessionid")
                 index.db.commit()
             finally:
